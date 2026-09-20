@@ -122,6 +122,36 @@ fn take_cookie_diag() -> String {
         .unwrap_or_default()
 }
 
+/// 在登录窗口页面上显示一行诊断状态。
+///
+/// 为什么画在页面上：`log_diag` 写 `%TEMP%` 在 Android 上读不到；而
+/// `uiautomator dump` 读不到应用内的 toast。把诊断画进页面后，无论成功失败
+/// 都能用 `adb shell uiautomator dump` 读到，真机排查不再靠猜。
+fn show_login_status(window: &tauri::WebviewWindow, text: &str) {
+    let esc = text.replace('\\', "").replace('\'', "").replace('\n', " ");
+    let js = format!(
+        r#"
+(function () {{
+  try {{
+    var d = document.getElementById('__oaDiag');
+    if (!d) {{
+      d = document.createElement('div');
+      d.id = '__oaDiag';
+      d.setAttribute('style',
+        'position:fixed;left:0;right:0;bottom:0;z-index:2147483647;'
+        + 'background:rgba(0,0,0,.82);color:#8ef;padding:8px 10px;'
+        + 'font:12px/1.45 ui-monospace,Consolas,monospace;white-space:pre-wrap;'
+        + 'word-break:break-all;');
+      (document.body || document.documentElement).appendChild(d);
+    }}
+    d.textContent = '【诊断】' + '{esc}';
+  }} catch (e) {{}}
+}})();
+"#
+    );
+    let _ = window.eval(js);
+}
+
 /// 读取该地址在 webview 中的全部 Cookie，拼成请求可用的 Cookie 头。
 ///
 /// `cookies_for_url` 是同步方法，返回的正是"会发给该 URL 的那些 Cookie"，
@@ -391,6 +421,7 @@ async fn vpn_login(app: tauri::AppHandle) -> Result<(), String> {
             if let Some(u) = &current {
                 if let Some(root) = vpn_root_of(u) {
                     log_diag(&format!("[{}] 已进入 OA：{u}", now_str()));
+                    show_login_status(&window, &format!("已进入 OA\n前缀: {root}"));
                     candidates.push(root);
                 }
             }
@@ -442,10 +473,19 @@ async fn vpn_login(app: tauri::AppHandle) -> Result<(), String> {
                     "[{}] 尝试前缀 {root}｜Cookie 名: {cookie_names}",
                     now_str()
                 ));
+                let n_cookies = cookies.split(';').filter(|s| !s.trim().is_empty()).count();
+                show_login_status(
+                    &window,
+                    &format!("前缀: {root}\nCookie 数: {n_cookies}\n正在验证会话…"),
+                );
 
                 let (ok, detail) =
                     tauri::async_runtime::block_on(verify_session(&root, &cookies));
                 log_diag(&format!("[{}] 验证结果 ok={ok}｜{detail}", now_str()));
+                show_login_status(
+                    &window,
+                    &format!("前缀: {root}\nCookie 数: {n_cookies}\n验证: {detail}"),
+                );
 
                 if ok {
                     let _ = window.destroy();
