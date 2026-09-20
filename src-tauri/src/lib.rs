@@ -7,10 +7,6 @@ use tauri::{Emitter, Manager};
 const VPN_LOGIN_URL: &str = "https://vpn.jlu.edu.cn/login";
 const LOGIN_WINDOW_LABEL: &str = "vpn-login";
 const LOGIN_TIMEOUT_SECS: u64 = 300;
-/// 门户是 SPA，磁贴需等渲染/接口返回；最多尝试自动进入 OA 这么多次。
-/// 每轮轮询约 800ms，40 次≈32 秒，足够覆盖门户加载较慢的情况（实测第 13 次成功）。
-const AUTO_CLICK_MAX_TRIES: u32 = 40;
-
 /// 拉取通知列表（组织筛选 / 关键词 / 日期范围 / 分页）。
 /// 访问模式随 `opts.access` 传入：不传即直连，传 Vpn 即走网页版 VPN。
 #[tauri::command]
@@ -367,10 +363,7 @@ async fn vpn_login(app: tauri::AppHandle) -> Result<(), String> {
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(LOGIN_TIMEOUT_SECS);
         let mut last_candidate: Option<String> = None;
-        // 自动进入 OA 的尝试次数上限：门户是 SPA，磁贴要等渲染/接口回来才出现，
-        // 所以允许重试；但别无限注入脚本。
-        let mut auto_click_tries: u32 = 0;
-
+        // 进入 OA 由注入的浮层按钮负责，这里无需重试计数器
         loop {
             if closed.load(Ordering::SeqCst) {
                 let _ = handle.emit(
@@ -402,41 +395,10 @@ async fn vpn_login(app: tauri::AppHandle) -> Result<(), String> {
             // 当前地址：登录成功后网关会跳转
             let current = window.url().ok().map(|u| u.to_string());
 
-            // 自动进入 OA：登录后停在门户页时，找出"吉大 OA"磁贴的链接并直接导航，
-            // 省掉用户手动点击那一步。
-            //
-            // 关键：这里只是**读取门户自己生成好的链接**，不复制门户的加密逻辑
-            // （加密串按目标资源用 AES 生成，密钥按会话注入，见 portal.js）。
-            // 因此拿到的地址天然正确，也不怕网关升级改算法。
-            let at_portal = current
-                .as_deref()
-                .map(|u| u.contains("/https/") && !u.contains("/defaultroot"))
-                .unwrap_or(false);
-            if at_portal && auto_click_tries < AUTO_CLICK_MAX_TRIES {
-                auto_click_tries += 1;
-                let script = format!(
-                    r#"
-                    (function () {{
-                      var cur = location.href;
-                      if (cur.indexOf('/defaultroot') >= 0) return 'already';
-                      var as = document.querySelectorAll('a[href]');
-                      for (var i = 0; i < as.length; i++) {{
-                        var h = as[i].getAttribute('href') || '';
-                        if (h.indexOf('/defaultroot') < 0) continue;
-                        if (h === cur) continue;
-                        location.href = as[i].href;
-                        return 'ok';
-                      }}
-                      return 'none:' + as.length;
-                    }})();
-                    "#
-                );
-                log_diag(&format!(
-                    "[{}] 在门户页，尝试自动进入 OA（第 {auto_click_tries} 次）",
-                    now_str()
-                ));
-                let _ = window.eval(script);
-            }
+            // 进入 OA 由门户页上注入的「进入吉大 OA」浮层按钮完成（见窗口的
+            // initialization_script）。Rust 侧不再尝试自动点击：
+            // 门户的磁贴不是 <a>、地址在点击瞬间由 JS 现算，自动定位反复失败
+            // 且失败无从察觉；交给用户点一次按钮更可靠，失败也看得见。
 
             // 候选前缀：只认"地址里已出现 defaultroot"，即已经真的在 OA 上。
             //
