@@ -40,3 +40,16 @@ export function fetchImage(url: string, access?: Access): Promise<string> {
 export function openVpnLogin(url: string): Promise<void> {
   return invoke<void>("open_vpn_login", { url });
 }
+
+/**
+ * 打开内置登录窗口。用户在其中正常登录后，后端会自动抓取并验证会话，
+ * 结果通过 `vpn-login-result` 事件回传（见 types.ts 的 VpnLoginResult）。
+ */
+export function startVpnLogin(): Promise<void> {
+  return invoke<void>("vpn_login");
+}
+
+/** 关闭内置登录窗口（用户取消时调用）。 */
+export function closeVpnLogin(): Promise<void> {
+  return invoke<void>("close_vpn_login");
+}

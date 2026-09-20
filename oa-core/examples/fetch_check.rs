@@ -7,8 +7,8 @@
 //!   cargo run -p oa-core --example fetch_check -- <VPN地址> [会话票据]
 //!
 //! 其中 VPN 地址就是登录 VPN、进入校内 OA 后浏览器地址栏里的完整网址；
-//! 会话票据是 Cookie `wengine_vpn_ticketvpn_jlu_edu_cn` 的值（可省略，省略时
-//! 只能访问匿名可用的资源）。
+//! 会话 Cookie 串（形如 `a=1; b=2`，可省略，省略时只能访问匿名可用的资源）。
+//! 正常使用应用时无需手动提供：内置登录窗口会自动抓取并验证。
 
 use oa_core::{
     build_attachment_url, fetch_detail, fetch_image, fetch_list, search_orgs, Access, ListOptions,
@@ -32,13 +32,27 @@ fn parse_access() -> Access {
                 "[访问模式] 网页版 VPN，前缀={prefix}，票据={}",
                 if ticket.is_some() { "已提供" } else { "未提供" }
             );
-            Access::Vpn { prefix, ticket }
+            Access::Vpn { prefix, cookies: ticket }
         }
     }
 }
 
 #[tokio::main]
 async fn main() {
+    // 自检：网关地址规范化（内置登录窗口依赖它拿到 <加密串>）
+    if std::env::args().any(|a| a == "--probe") {
+        println!("[探针] 规范化 https://oa.jlu.edu.cn/defaultroot/");
+        match oa_core::probe_forwarded_url("https://oa.jlu.edu.cn/defaultroot/").await {
+            Some(u) => println!("[探针] 得到: {u}"),
+            None => println!("[探针] 未取到转发地址"),
+        }
+        return;
+    }
+    if std::env::args().any(|a| a == "--selftest") {
+        println!("[自检] 已加载");
+        return;
+    }
+
     let access = parse_access();
 
     // 1) 组织筛选：科研院
@@ -157,7 +171,7 @@ async fn main() {
     // 7) 安全校验：伪造的 VPN 前缀必须被拒绝
     let fake = Access::Vpn {
         prefix: "https://evil.example.com/https/oa.jlu.edu.cn/defaultroot/".to_string(),
-        ticket: None,
+        cookies: None,
     };
     match fetch_list(&ListOptions {
         access: Some(fake),

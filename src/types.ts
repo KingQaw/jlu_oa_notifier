@@ -53,9 +53,19 @@ export type Access =
       mode: "vpn";
       /** 站点前缀，形如 https://vpn.jlu.edu.cn/https/<加密串>/defaultroot/ */
       prefix: string;
-      /** 网页 VPN 会话票据（Cookie wengine_vpn_ticketvpn_jlu_edu_cn 的值） */
-      ticket?: string;
+      /** 发往目标站点所需的会话 Cookie 串，形如 `a=1; b=2`（由登录窗口自动抓取） */
+      cookies?: string;
     };
+
+/** 内置登录窗口的回传结果（事件 `vpn-login-result`）。 */
+export interface VpnLoginResult {
+  ok: boolean;
+  prefix?: string | null;
+  cookies?: string | null;
+  message?: string | null;
+}
+
+export const VPN_LOGIN_EVENT = "vpn-login-result";
 
 /** 后端在网页 VPN 未登录（或票据过期）时返回的错误标识。 */
 export const NEED_VPN_LOGIN = "NEED_VPN_LOGIN";

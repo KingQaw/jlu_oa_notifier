@@ -110,30 +110,24 @@ fn root_for(access: &Access) -> Result<String> {
 fn http_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .user_agent(USER_AGENT)
-        // VPN 网关会下发 HttpOnly 的会话票据；这里不主动读取，仅依赖用户提供的
-        // vpnTicket 以 Cookie 头形式携带（见 `apply_ticket`）。
+        // VPN 网关的会话是 HttpOnly Cookie；这里不主动管理会话，而是把
+        // 内置登录窗口抓到的 Cookie 串按请求带上（见 `apply_cookies`）。
         .build()
         .map_err(err)
 }
 
-/// 把网页 VPN 的会话票据附加到请求上。
+/// 把网页 VPN 的会话 Cookie 附加到请求上。
 ///
-/// 网页 VPN 用 HttpOnly Cookie 保存登录态，WebView 的 JS 读不到，所以由用户
-/// 在浏览器登录后从开发者工具里复制该 Cookie 值交给本程序使用。
-fn apply_ticket(
+/// 网页 VPN 用 HttpOnly Cookie 保存登录态，页面 JS 读不到，因此由应用内置的
+/// 登录窗口在用户登录后自动抓取并传进来（见 tauri 层的 `vpn_login`）。
+fn apply_cookies(
     mut req: reqwest::RequestBuilder,
-    ticket: Option<&str>,
+    cookies: Option<&str>,
 ) -> reqwest::RequestBuilder {
-    if let Some(t) = ticket {
-        let t = t.trim();
-        if !t.is_empty() {
-            // 值本身可能已经带 "名=值" 形式，两种都兼容
-            let cookie = if t.contains('=') {
-                t.to_string()
-            } else {
-                format!("wengine_vpn_ticketvpn_jlu_edu_cn={t}")
-            };
-            req = req.header(reqwest::header::COOKIE, cookie);
+    if let Some(c) = cookies {
+        let c = c.trim().trim_end_matches(';');
+        if !c.is_empty() {
+            req = req.header(reqwest::header::COOKIE, c);
         }
     }
     req
@@ -168,7 +162,7 @@ pub async fn fetch_list(opts: &ListOptions) -> Result<ListResult> {
     }
 
     let url = url_for(&root, "PortalInformation!jldxList.action");
-    let resp = apply_ticket(client.get(&url), access.ticket())
+    let resp = apply_cookies(client.get(&url), access.cookies())
         .query(&pairs)
         .send()
         .await
@@ -185,7 +179,7 @@ pub async fn fetch_detail(id: &str, access: &Access) -> Result<NoticeDetail> {
     let client = http_client()?;
     let root = root_for(access)?;
     let url = url_for(&root, "PortalInformation!getInformation.action");
-    let resp = apply_ticket(client.get(&url), access.ticket())
+    let resp = apply_cookies(client.get(&url), access.cookies())
         .query(&[("id", id), ("channelId", CHANNEL_ID)])
         .send()
         .await
@@ -202,7 +196,7 @@ pub async fn search_orgs(query: &str, access: &Access) -> Result<Vec<String>> {
     let client = http_client()?;
     let root = root_for(access)?;
     let url = url_for(&root, "PortalInformation!jldxList.action");
-    let resp = apply_ticket(client.get(&url), access.ticket())
+    let resp = apply_cookies(client.get(&url), access.cookies())
         .query(&[
             ("channelId", CHANNEL_ID),
             ("searchnr", query),
@@ -227,16 +221,16 @@ pub async fn build_attachment_url(
 ) -> Result<String> {
     let client = http_client()?;
     let root = root_for(access)?;
-    let ticket = access.ticket();
+    let cookies = access.cookies();
     let date_temp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs().to_string())
         .unwrap_or_default();
 
     // 1) 检查附件是否存在
-    let resp = apply_ticket(
+    let resp = apply_cookies(
         client.post(url_for(&root, "rd/download/CheckExist.jsp")),
-        ticket,
+        cookies,
     )
     .form(&[("attsave", filename), ("dateTemp", date_temp.as_str())])
     .send()
@@ -252,9 +246,9 @@ pub async fn build_attachment_url(
 
     // 2) 编码下载参数
     let res = format!("{}@{}@{}", filename, name, information_id);
-    let resp = apply_ticket(
+    let resp = apply_cookies(
         client.post(url_for(&root, "rd/download/BASEEncoderAjax.jsp")),
-        ticket,
+        cookies,
     )
     .form(&[("res", res.as_str())])
     .send()
@@ -295,7 +289,7 @@ pub async fn fetch_image(url: &str, access: &Access) -> Result<String> {
     }
 
     let client = http_client()?;
-    let resp = apply_ticket(client.get(parsed), access.ticket())
+    let resp = apply_cookies(client.get(parsed), access.cookies())
         .send()
         .await
         .map_err(|e| map_request_error(err(e), &access))?;
@@ -322,6 +316,52 @@ pub async fn fetch_image(url: &str, access: &Access) -> Result<String> {
 /// 网页 VPN 未登录时的错误标识：前端据此提示"需要登录 VPN / 更新票据"，
 /// 而不是笼统地报"加载失败"。
 pub const NEED_LOGIN: &str = "NEED_VPN_LOGIN";
+
+/// 让网关把给定的校内地址规范化成"转发地址"，返回最终地址。
+///
+/// 用途：应用内置的登录窗口需要知道 `<加密串>` 才能开始请求。这个加密串
+/// 由网关自己生成，本程序无法推导，所以这里直接问网关：
+/// 请求 `https://vpn.jlu.edu.cn/https/<校内地址>`，网关会把地址规范化，
+/// 并在 `Location`（或最终地址）里给出带真实加密串的转发地址。
+///
+/// 之所以不依赖前端页面的导航事件，是因为网瑞达门户是 SPA，页面内部跳转
+/// 未必触发导航回调；而这一步只依赖网关自身行为，更稳。
+///
+/// 出于安全考虑，只允许对固定的校内 host 做规范化（不接受任意 URL）。
+pub async fn probe_forwarded_url(target: &str) -> Option<String> {
+    const ALLOWED_HOSTS: [&str; 2] = ["oa.jlu.edu.cn", "vpn.jlu.edu.cn"];
+    let parsed = reqwest::Url::parse(target).ok()?;
+    if !ALLOWED_HOSTS.contains(&parsed.host_str()?) {
+        return None;
+    }
+
+    // 网关的转发格式是 /https/<host>/<path>（注意不含 "https://" 前缀）
+    let host_and_path = format!("{}{}", parsed.host_str()?, parsed.path());
+    let gateway = format!("https://vpn.jlu.edu.cn/https/{host_and_path}");
+    let client = reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .ok()?;
+
+    let resp = client.get(&gateway).send().await.ok()?;
+    // 网关通常用 302 把规范化后的地址放在 Location 里
+    if let Some(loc) = resp
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+    {
+        if loc.contains("/https/") {
+            return Some(loc.to_string());
+        }
+    }
+    // 退而求其次：若直接返回了内容，则最终地址本身就是规范化结果
+    let final_url = resp.url().to_string();
+    if final_url.contains("/https/") && final_url.contains("defaultroot") {
+        return Some(final_url);
+    }
+    None
+}
 
 /// 直连不可达（多半是没连校园网/没用 VPN）时的错误标识。
 /// 前端据此提示"是否改用 VPN 访问"，比只显示底层错误友好得多。
@@ -414,17 +454,16 @@ mod tests {
     }
 
     #[test]
-    fn ticket_header_is_built_when_missing_name() {
-        // 仅值 → 补上 Cookie 名
-        let t = Access::Vpn {
+    fn cookies_are_exposed_in_vpn_mode() {
+        let a = Access::Vpn {
             prefix: "x".into(),
-            ticket: Some("abc123".into()),
+            cookies: Some("a=1; b=2".into()),
         };
-        assert_eq!(t.ticket(), Some("abc123"));
+        assert_eq!(a.cookies(), Some("a=1; b=2"));
     }
 
     #[test]
-    fn direct_mode_has_no_ticket() {
-        assert_eq!(Access::Direct.ticket(), None);
+    fn direct_mode_has_no_cookies() {
+        assert_eq!(Access::Direct.cookies(), None);
     }
 }

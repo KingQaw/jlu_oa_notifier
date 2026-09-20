@@ -15,6 +15,6 @@ pub use parse::{parse_detail, parse_list, parse_orgs};
 
 #[cfg(feature = "http")]
 pub use fetch::{
-    build_attachment_url, fetch_detail, fetch_image, fetch_list, search_orgs, BASE, CHANNEL_ID,
-    NEED_LOGIN, NETWORK_UNREACHABLE,
+    build_attachment_url, fetch_detail, fetch_image, fetch_list, probe_forwarded_url, search_orgs,
+    BASE, CHANNEL_ID, NEED_LOGIN, NETWORK_UNREACHABLE,
 };

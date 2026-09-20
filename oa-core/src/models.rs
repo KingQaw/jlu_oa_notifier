@@ -61,11 +61,13 @@ pub enum Access {
         /// 站点前缀，例如
         /// `https://vpn.jlu.edu.cn/https/<加密串>/defaultroot/`
         prefix: String,
-        /// 网页 VPN 的会话票据（Cookie `wengine_vpn_ticketvpn_jlu_edu_cn` 的值）。
-        /// 该 Cookie 是 HttpOnly，WebView 的 JS 读不到，需用户在浏览器登录后复制；
-        /// 为空时仅能访问匿名可用的资源。
+        /// 发往目标站点所需的会话 Cookie，形如 `a=1; b=2`。
+        ///
+        /// 由应用内置登录窗口自动抓取（网关的会话 Cookie 是 HttpOnly，
+        /// 页面 JS 读不到，但 Tauri 的 webview cookie 接口可以）。留空前缀时
+        /// 仅能访问匿名可用的资源。
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        ticket: Option<String>,
+        cookies: Option<String>,
     },
 }
 
@@ -76,11 +78,11 @@ impl Default for Access {
 }
 
 impl Access {
-    /// 取出会话票据（仅 VPN 模式有）。
-    pub fn ticket(&self) -> Option<&str> {
+    /// 取出会话 Cookie 串（仅 VPN 模式有）。
+    pub fn cookies(&self) -> Option<&str> {
         match self {
             Access::Direct => None,
-            Access::Vpn { ticket, .. } => ticket.as_deref(),
+            Access::Vpn { cookies, .. } => cookies.as_deref(),
         }
     }
 

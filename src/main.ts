@@ -1,23 +1,26 @@
 import "./style.css";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { onBackButtonPress } from "@tauri-apps/api/app";
+import { listen } from "@tauri-apps/api/event";
 import {
   fetchList,
   fetchDetail,
   searchOrgs,
   buildAttachmentUrl,
   fetchImage,
-  openVpnLogin,
+  startVpnLogin,
+  closeVpnLogin,
 } from "./api";
 import { ORG_PRESETS } from "./orgs";
 import {
   NEED_VPN_LOGIN,
   NETWORK_UNREACHABLE,
-  VPN_LOGIN_URL,
+  VPN_LOGIN_EVENT,
   type Access,
   type ListOptions,
   type NoticeItem,
   type NoticeDetail,
+  type VpnLoginResult,
 } from "./types";
 
 const BASE = "https://oa.jlu.edu.cn/defaultroot/";
@@ -52,7 +55,7 @@ const STORAGE_ORGS = "jlu-oa:followed-orgs";
 const STORAGE_TIME = "jlu-oa:time-range";
 const STORAGE_ACCESS_MODE = "jlu-oa:access-mode";
 const STORAGE_VPN_URL = "jlu-oa:vpn-url";
-const STORAGE_VPN_TICKET = "jlu-oa:vpn-ticket";
+const STORAGE_VPN_TICKET = "jlu-oa:vpn-cookies";
 
 /** 访问模式：直连校内 OA，或经网页版 VPN 转发。 */
 type AccessMode = "direct" | "vpn";
@@ -74,9 +77,9 @@ interface State {
   listRenderKey: string;
   /** 当前访问模式 */
   accessMode: AccessMode;
-  /** 网页 VPN 站点地址（用户在地址栏里复制的完整 URL） */
+  /** 网页 VPN 站点地址（正常情况下由登录窗口自动获取） */
   vpnUrl: string;
-  /** 网页 VPN 会话票据（Cookie 值），可为空 */
+  /** 网页 VPN 会话 Cookie 串（正常情况下由登录窗口自动抓取） */
   vpnTicket: string;
 }
 
@@ -113,38 +116,51 @@ app.innerHTML = `
   </header>
 
   <div id="vpnPanel" class="vpn-panel hidden">
-    <div class="vpn-row">
-      <label class="vpn-label" for="vpnUrlInput">VPN 地址</label>
-      <input
-        id="vpnUrlInput"
-        type="text"
-        class="vpn-input"
-        placeholder="登录 VPN 并进入校内 OA 后，复制地址栏的完整网址粘贴到这里"
-        autocomplete="off"
-        spellcheck="false"
-      />
+    <div class="vpn-row vpn-lead">
+      <button id="vpnLoginBtn" class="btn btn-primary" type="button">
+        一键登录 VPN
+      </button>
+      <span class="vpn-status" id="vpnAutoHint">
+        点击后在应用内登录（支持扫码 / 账号密码），登录成功会自动配置并启用，无需手动复制任何内容。
+      </span>
     </div>
-    <div class="vpn-row">
-      <label class="vpn-label" for="vpnTicketInput">会话票据</label>
-      <input
-        id="vpnTicketInput"
-        type="password"
-        class="vpn-input"
-        placeholder="可选：Cookie wengine_vpn_ticketvpn_jlu_edu_cn 的值（F12 → Application → Cookies）"
-        autocomplete="off"
-        spellcheck="false"
-      />
-      <button id="vpnOpenLoginBtn" class="btn" type="button">打开登录页</button>
+    <div id="vpnProgress" class="vpn-progress hidden">
+      <span class="spinner spinner-sm"></span>
+      <span id="vpnProgressText">等待登录…</span>
     </div>
+
+    <details id="vpnManual">
+      <summary>手动配置（自动登录不可用时使用）</summary>
+      <div class="vpn-row">
+        <label class="vpn-label" for="vpnUrlInput">VPN 地址</label>
+        <input
+          id="vpnUrlInput"
+          type="text"
+          class="vpn-input"
+          placeholder="登录 VPN 并进入校内 OA 后，复制地址栏的完整网址"
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </div>
+      <div class="vpn-row">
+        <label class="vpn-label" for="vpnTicketInput">会话 Cookie</label>
+        <input
+          id="vpnTicketInput"
+          type="text"
+          class="vpn-input"
+          placeholder="形如 name=value; name2=value2（F12 → Application → Cookies）"
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </div>
+      <div class="vpn-row">
+        <button id="vpnApplyBtn" class="btn" type="button">应用并启用</button>
+      </div>
+    </details>
+
     <div class="vpn-row vpn-actions">
-      <button id="vpnApplyBtn" class="btn btn-primary" type="button">启用 VPN 访问</button>
       <button id="vpnDisableBtn" class="btn" type="button">切回直连</button>
       <span id="vpnStatus" class="vpn-status"></span>
-    </div>
-    <div class="vpn-hint">
-      说明：网页版 VPN 会把校内站点编码成一段加密地址。请先用浏览器登录
-      <code>vpn.jlu.edu.cn</code>，进入吉大 OA 后把地址栏网址粘贴到上面；本应用会复用该
-      地址访问列表与详情（票据是 HttpOnly Cookie，需按上面提示手动复制）。
     </div>
   </div>
 
@@ -264,9 +280,13 @@ const el = {
   toast: $<HTMLElement>("#toast"),
   vpnBtn: $<HTMLButtonElement>("#vpnBtn"),
   vpnPanel: $<HTMLElement>("#vpnPanel"),
+  vpnLoginBtn: $<HTMLButtonElement>("#vpnLoginBtn"),
+  vpnAutoHint: $<HTMLElement>("#vpnAutoHint"),
+  vpnProgress: $<HTMLElement>("#vpnProgress"),
+  vpnProgressText: $<HTMLElement>("#vpnProgressText"),
+  vpnManual: $<HTMLDetailsElement>("#vpnManual"),
   vpnUrlInput: $<HTMLInputElement>("#vpnUrlInput"),
   vpnTicketInput: $<HTMLInputElement>("#vpnTicketInput"),
-  vpnOpenLoginBtn: $<HTMLButtonElement>("#vpnOpenLoginBtn"),
   vpnApplyBtn: $<HTMLButtonElement>("#vpnApplyBtn"),
   vpnDisableBtn: $<HTMLButtonElement>("#vpnDisableBtn"),
   vpnStatus: $<HTMLElement>("#vpnStatus"),
@@ -451,8 +471,13 @@ function currentAccess(): Access | null {
   return {
     mode: "vpn",
     prefix,
-    ticket: state.vpnTicket.trim() || undefined,
+    cookies: state.vpnTicket.trim() || undefined,
   };
+}
+
+/** 是否为 VPN 模式且配置完备（地址与 Cookie 都就绪）。 */
+function vpnReady(): boolean {
+  return state.accessMode === "vpn" && !!state.vpnUrl.trim();
 }
 
 /** 更新顶栏按钮文字与状态提示。 */
@@ -462,41 +487,145 @@ function updateVpnUi() {
   el.vpnBtn.classList.toggle("active", on);
 
   if (!on) {
-    el.vpnStatus.textContent = "当前：直连校内 OA";
+    el.vpnStatus.textContent = "当前：直连校内 OA（若在校外请改用 VPN）";
     el.vpnStatus.classList.remove("warn");
     return;
   }
-  if (!state.vpnUrl.trim()) {
-    el.vpnStatus.textContent = "已选 VPN，但尚未填写 VPN 地址";
+  if (!vpnReady()) {
+    el.vpnStatus.textContent = "已选 VPN，但尚未完成登录配置";
     el.vpnStatus.classList.add("warn");
     return;
   }
   el.vpnStatus.textContent = state.vpnTicket.trim()
-    ? "当前：经网页版 VPN 访问（已带会话票据）"
-    : "当前：经网页版 VPN 访问（未填票据，可能提示需要登录）";
+    ? "当前：经 VPN 访问（会话由登录窗口自动获取）"
+    : "当前：经 VPN 访问（无会话，可能提示需要登录）";
   el.vpnStatus.classList.remove("warn");
 }
 
-/** 切换面板显隐，并在打开时把已保存的值回填到输入框。 */
+/** 切换面板显隐，并在打开时把已保存的值回填到手动配置输入框。 */
 function toggleVpnPanel(show?: boolean) {
   const willShow = show ?? el.vpnPanel.classList.contains("hidden");
   el.vpnPanel.classList.toggle("hidden", !willShow);
   if (willShow) {
     el.vpnUrlInput.value = state.vpnUrl;
     el.vpnTicketInput.value = state.vpnTicket;
-    el.vpnUrlInput.focus();
   }
+}
+
+// ---------- 一键登录 VPN ----------
+
+/** 登录期进度计时器，仅用于长时间无结果时自动复位 UI。 */
+let vpnProgressTimer: number | undefined;
+
+/** 是否正在等待内置登录窗口返回结果。 */
+let vpnLoginPending = false;
+let vpnResultUnlisten: (() => void) | undefined;
+
+function setVpnProgress(on: boolean, text = "等待登录…") {
+  el.vpnProgress.classList.toggle("hidden", !on);
+  el.vpnLoginBtn.disabled = on;
+  if (on) {
+    el.vpnProgressText.textContent = text;
+    el.vpnAutoHint.textContent = "请在弹出的窗口中完成登录，成功后将自动配置并启用。";
+  } else {
+    el.vpnAutoHint.textContent =
+      "点击后在应用内登录（支持扫码 / 账号密码），登录成功会自动配置并启用，无需手动复制任何内容。";
+  }
+}
+
+/** 处理内置登录窗口的回传结果。 */
+function onVpnLoginResult(res: VpnLoginResult) {
+  vpnLoginPending = false;
+  setVpnProgress(false);
+  if (vpnProgressTimer) {
+    clearTimeout(vpnProgressTimer);
+    vpnProgressTimer = undefined;
+  }
+
+  if (!res.ok) {
+    const msg = res.message ?? "登录未完成";
+    el.vpnStatus.textContent = msg;
+    el.vpnStatus.classList.add("warn");
+    toast(`VPN 登录未完成：${msg}`);
+    return;
+  }
+
+  state.vpnUrl = res.prefix ?? "";
+  state.vpnTicket = res.cookies ?? "";
+  state.accessMode = "vpn";
+  savePrefs();
+  updateVpnUi();
+  el.vpnUrlInput.value = state.vpnUrl;
+  el.vpnTicketInput.value = state.vpnTicket;
+  toggleVpnPanel(false);
+  toast("VPN 登录成功，已自动启用");
+  void reload();
+}
+
+/** 发起一键登录。 */
+async function startVpnLoginFlow() {
+  if (vpnLoginPending) {
+    toast("登录窗口已打开，请在其中完成登录");
+    return;
+  }
+
+  // 事件监听只需注册一次
+  if (!vpnResultUnlisten) {
+    try {
+      vpnResultUnlisten = await listen<VpnLoginResult>(VPN_LOGIN_EVENT, (e) =>
+        onVpnLoginResult(e.payload),
+      );
+    } catch (e) {
+      toast(`无法监听登录结果：${String(e)}`);
+      return;
+    }
+  }
+
+  try {
+    await startVpnLogin();
+  } catch (e) {
+    toast(`无法打开登录窗口：${String(e)}`);
+    return;
+  }
+
+  vpnLoginPending = true;
+  setVpnProgress(true);
+  // 后端最长等待 5 分钟；这里多给 1 分钟后自动复位，避免 UI 卡在"等待登录"
+  vpnProgressTimer = window.setTimeout(() => {
+    vpnLoginPending = false;
+    setVpnProgress(false);
+  }, 360_000);
+}
+
+/** 用户取消登录。 */
+async function cancelVpnLogin() {
+  if (!vpnLoginPending) {
+    toggleVpnPanel(false);
+    return;
+  }
+  try {
+    await closeVpnLogin();
+  } catch {
+    /* 窗口可能已关闭，忽略 */
+  }
+  vpnLoginPending = false;
+  setVpnProgress(false);
+  if (vpnProgressTimer) {
+    clearTimeout(vpnProgressTimer);
+    vpnProgressTimer = undefined;
+  }
+  toast("已取消登录");
 }
 
 /**
  * 把后端返回的错误转成用户能看懂的话，并给出下一步动作。
- * - NEED_VPN_LOGIN：网页 VPN 未登录 / 票据过期
+ * - NEED_VPN_LOGIN：网页 VPN 未登录 / 会话过期
  * - NETWORK_UNREACHABLE：直连连不上，多半是没连校园网
  */
 function describeError(e: unknown): string {
   const msg = String(e);
   if (msg.includes(NEED_VPN_LOGIN)) {
-    return "网页版 VPN 未登录或票据已过期，请点右上角「直连/VPN」重新登录并更新票据";
+    return "VPN 会话已失效，请点右上角「直连/VPN」重新一键登录";
   }
   if (msg.includes(NETWORK_UNREACHABLE)) {
     return "连不上校内网。若当前不在校园网，请点右上角「直连/VPN」改用 VPN 访问";
@@ -1115,11 +1244,8 @@ el.jumpInput.addEventListener("keydown", (e) => {
 // ---------- 访问模式（直连 / 网页版 VPN） ----------
 el.vpnBtn.addEventListener("click", () => toggleVpnPanel());
 
-el.vpnOpenLoginBtn.addEventListener("click", () => {
-  void openVpnLogin(VPN_LOGIN_URL)
-    .then(() => toast("已打开 VPN 登录页，登录后复制地址栏网址回来粘贴"))
-    .catch((e) => toast(`打开登录页失败：${String(e)}`));
-});
+// 一键登录：在应用内置窗口里登录，后端自动抓取并验证会话
+el.vpnLoginBtn.addEventListener("click", () => void startVpnLoginFlow());
 
 el.vpnApplyBtn.addEventListener("click", () => {
   const url = el.vpnUrlInput.value.trim();
@@ -1143,6 +1269,11 @@ el.vpnApplyBtn.addEventListener("click", () => {
 });
 
 el.vpnDisableBtn.addEventListener("click", () => {
+  // 等待登录中：这个按钮当作「取消」用
+  if (vpnLoginPending) {
+    void cancelVpnLogin();
+    return;
+  }
   if (state.accessMode === "direct") {
     toggleVpnPanel(false);
     return;

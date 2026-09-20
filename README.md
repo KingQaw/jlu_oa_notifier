@@ -606,10 +606,49 @@ dir /s /b src-tauri\gen\android\app\build\outputs\*.apk
 
 | 命令 | 参数 | 说明 |
 | --- | --- | --- |
-| `fetch_list` | `{ org?, page?, keyword?, searchType?, dateRange? }` | 拉取列表；`searchType` 0=标题 1=组织 2=内容，`dateRange` ""/1/6/12 |
-| `fetch_detail` | `{ id }` | 拉取详情（标题/时间/组织/正文/附件） |
-| `search_orgs` | `{ query }` | 按组织名模糊搜索 |
-| `build_attachment_url` | `{ informationId, filename, name }` | 生成附件下载直链 |
+| `fetch_list` | `{ org?, page?, keyword?, searchType?, dateRange?, access? }` | 拉取列表；`searchType` 0=标题 1=组织 2=内容，`dateRange` ""/1/6/12 |
+| `fetch_detail` | `{ id, access? }` | 拉取详情（标题/时间/组织/正文/附件） |
+| `search_orgs` | `{ query, access? }` | 按组织名模糊搜索 |
+| `build_attachment_url` | `{ informationId, filename, name, access? }` | 生成附件下载直链 |
+| `fetch_image` | `{ url, access? }` | 抓取站内图片并内联为 data URL |
+| `vpn_login` | — | 打开内置登录窗口；用户登录后自动抓取并验证会话，经 `vpn-login-result` 事件回传 |
+| `close_vpn_login` | — | 关闭内置登录窗口（取消登录） |
+
+`access` 为访问模式，不传即直连：
+
+```jsonc
+{ "mode": "direct" }
+{ "mode": "vpn", "prefix": "https://vpn.jlu.edu.cn/https/<加密串>/defaultroot/", "cookies": "a=1; b=2" }
+```
+
+## VPN 访问（无校园网时）
+
+`oa.jlu.edu.cn` 是校内平台，校外无法直连。应用支持经**吉大网页版 VPN**（网瑞达 wengine）访问，右上角「直连 / VPN」按钮切换。
+
+### 一键登录（推荐）
+
+1. 点右上角按钮 → **一键登录 VPN**
+2. 在弹出的应用内窗口中登录（支持扫码、账号密码等，与浏览器登录完全一致）
+3. 登录成功后窗口自动关闭，应用自动配置并启用 VPN 访问
+
+全过程不需要手动复制地址或 Cookie。
+
+**实现要点**（供维护参考）：
+
+- 登录在应用内嵌的**真实页面**上完成，应用不接触账号密码，验证码/多因子等均由学校页面自行处理。
+- 会话 Cookie 是 `HttpOnly` 的，页面 JS 读不到，但 Tauri 的 webview cookie 接口可以读到（`cookies_for_url`），因此由 Rust 侧读取并按需带上。
+- 网关把目标站点编码成一段**加密串**（形如 `.../https/<加密串>/defaultroot/...`）。该加密串本程序不推导、不破解，而是从登录后必然到达的页面地址里提取——这段加密串**与目标站点无关**（用户门户与 oa 地址里是同一段），因此取一次即可复用。
+- 抓到候选会话后会**先真实调用一次列表接口验证**，通过才保存并关闭窗口，避免"看起来登录了但会话不可用"。
+
+### 手动配置（兜底）
+
+若自动登录不可用，展开面板里的「手动配置」：从浏览器登录 VPN 并进入 OA 后，粘贴地址栏完整网址（以及需要的话，从 F12 → Application → Cookies 复制的 Cookie 串），点「应用并启用」。地址会被自动归一化到 `defaultroot/`，粘贴任意页面地址都可以。
+
+### 相关限制
+
+- 会话过期后请求会返回 `NEED_VPN_LOGIN`，界面会提示重新一键登录。
+- 直连失败会返回 `NETWORK_UNREACHABLE`，界面提示可改用 VPN。
+- VPN 模式下附件下载走系统浏览器，需要浏览器自身也处于 VPN 登录态。
 
 ## 说明与限制
 
@@ -627,7 +666,7 @@ dir /s /b src-tauri\gen\android\app\build\outputs\*.apk
 - **附件下载**：通过系统浏览器打开下载直链完成，附件是否可下载取决于平台权限与登录态（本站附件当前匿名可下载）。
 - **置顶/新标记**：解析自列表页的 `[置顶]` 与 `new.gif` 标记。
 - **内容渲染**：详情正文为站方 HTML，应用通过 `innerHTML` 注入并统一把相对图片/链接转为绝对地址；应用关闭了 CSP（`csp: null`）以便加载站内图片，如需更严格可自行配置。
-- **正文图片走后端**：正文图片（`<img src="/defaultroot/upload/html/xxx.png">`）不交给 WebView 直接加载，而是由 Rust 命令 `fetch_image` 抓取后内联为 `data:` URL。原因是 app 前端运行在 `tauri://localhost`，与 `https://oa.jlu.edu.cn` 跨源，WebView 直接加载会受跨源策略 / 证书信任 / 代理环境差异影响而失败。该命令只允许抓取 `https://oa.jlu.edu.cn` 下的地址（防 SSRF）；失败时前端保留原始地址兜底。
+- **正文图片走后端**：正文图片（`<img src="/defaultroot/upload/html/xxx.png">`）不交给 WebView 直接加载，而是由 Rust 命令 `fetch_image` 抓取后内联为 `data:` URL。原因是 app 前端运行在 `tauri://localhost`，与 `https://oa.jlu.edu.cn` 跨源，WebView 直接加载会受跨源策略 / 证书信任 / 代理环境差异影响而失败。该命令只允许抓取 `https://oa.jlu.edu.cn` 下的地址，或当前配置的 VPN 网关前缀之下的地址（防 SSRF）；失败时前端保留原始地址兜底。
 - **正文字体归一化**：通知正文是 Word 导出的 HTML，字号是绝对值且各篇不一致（常见 `9pt`≈12px、`14pt`≈18.7px、`15pt`、`16pt`），字体名也五花八门（`仿宋`/`仿宋_GB2312`/`方正仿宋_GB2312`/`宋体`/`黑体`，后两个 Windows 默认未安装）。应用做了两件事：① 用 `@font-face` + `local()` 做字体别名，缺失字体回退到本机等价 CJK 字体；② 注入正文后把小于 `15px` 的字号抬到下限（`src/main.ts` 的 `normalizeFontSizes`，上标/下标除外），避免个别通知字号过小。
 
 ## 验证

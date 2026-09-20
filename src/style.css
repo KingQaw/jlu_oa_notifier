@@ -137,6 +137,51 @@ body {
   padding-top: 2px;
 }
 
+/* 一键登录区 */
+.vpn-lead {
+  align-items: flex-start;
+}
+
+.vpn-lead .vpn-status {
+  flex: 1 1 320px;
+  line-height: 1.6;
+}
+
+.vpn-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.spinner-sm {
+  width: 16px;
+  height: 16px;
+  border-width: 2px;
+}
+
+/* 手动配置折叠区（兜底方案） */
+#vpnManual {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+#vpnManual > summary {
+  cursor: pointer;
+  padding: 4px 0;
+  user-select: none;
+}
+
+#vpnManual > summary:hover {
+  color: var(--primary);
+}
+
+#vpnManual .vpn-row {
+  padding-top: 6px;
+}
+
 .vpn-status {
   font-size: 12px;
   color: var(--muted);
