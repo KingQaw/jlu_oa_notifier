@@ -1,6 +1,6 @@
 use oa_core::{Access, ListOptions, ListResult, NoticeDetail};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
 /// 网页版 VPN 入口。
@@ -101,32 +101,47 @@ fn vpn_root_of(url: &str) -> Option<String> {
     Some(format!("{}{}/", &url[..i], MARK))
 }
 
+/// 最近一次读取会话 Cookie 的诊断信息。
+///
+/// 为什么需要它：`log_diag` 写的是 `%TEMP%` 下的文件，而 **Android 上应用进程
+/// 读不到该路径**，日志等于白写。真机排查只能靠界面呈现（配 adb uiautomator
+/// dump 读取），所以这里把关键诊断结果暂存下来，在失败提示里带给用户。
+static LAST_COOKIE_DIAG: Mutex<String> = Mutex::new(String::new());
+
+fn set_cookie_diag(msg: String) {
+    if let Ok(mut g) = LAST_COOKIE_DIAG.lock() {
+        *g = msg.clone();
+    }
+    log_diag(&msg);
+}
+
+fn take_cookie_diag() -> String {
+    LAST_COOKIE_DIAG
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default()
+}
+
 /// 读取该地址在 webview 中的全部 Cookie，拼成请求可用的 Cookie 头。
 ///
 /// `cookies_for_url` 是同步方法，返回的正是"会发给该 URL 的那些 Cookie"，
 /// 因此域/路径匹配由 WebView 自己处理，我们不必手工筛选。
 fn cookies_for(window: &tauri::WebviewWindow, url: &tauri::Url) -> Option<String> {
-    // 真机诊断：Android 上这条路径是否真的可用（文档称 Unsupported，
-    // 但 wry 的实现是通过 CookieManager.getCookie 走 Java 侧，理论上可用）
     let jar = match window.cookies_for_url(url.clone()) {
-        Ok(v) => {
-            log_diag(&format!(
-                "[{}] cookies_for_url 返回 {} 个 cookie（android={}）",
-                now_str(),
-                v.len(),
-                cfg!(target_os = "android")
-            ));
-            v
-        }
+        Ok(v) => v,
         Err(e) => {
-            log_diag(&format!(
-                "[{}] cookies_for_url 失败：{e}（android={}）",
-                now_str(),
+            set_cookie_diag(format!(
+                "cookies_for_url 失败：{e}（android={}）",
                 cfg!(target_os = "android")
             ));
             return None;
         }
     };
+    set_cookie_diag(format!(
+        "cookies_for_url 返回 {} 个（android={}）",
+        jar.len(),
+        cfg!(target_os = "android")
+    ));
     let joined = jar
         .iter()
         .map(|c| format!("{}={}", c.name(), c.value()))
@@ -291,6 +306,9 @@ async fn vpn_login(app: tauri::AppHandle) -> Result<(), String> {
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(LOGIN_TIMEOUT_SECS);
         let mut last_candidate: Option<String> = None;
+        // 连续取不到 Cookie 的次数：用于尽早失败并回报诊断，
+        // 而不是让用户干等 5 分钟超时
+        let mut no_cookie_strikes: u32 = 0;
         // 自动进入 OA 的尝试次数上限：门户是 SPA，磁贴要等渲染/接口回来才出现，
         // 所以允许重试；但别无限注入脚本。
         let mut auto_click_tries: u32 = 0;
@@ -317,7 +335,10 @@ async fn vpn_login(app: tauri::AppHandle) -> Result<(), String> {
                         ok: false,
                         prefix: None,
                         cookies: None,
-                        message: Some("登录超时（5 分钟），请重试".to_string()),
+                        message: Some(format!(
+                        "登录超时（5 分钟）。诊断：{}",
+                        take_cookie_diag()
+                    )),
                     },
                 );
                 return;
@@ -384,7 +405,29 @@ async fn vpn_login(app: tauri::AppHandle) -> Result<(), String> {
                     continue;
                 };
                 let Some(cookies) = cookies_for(&window, &cookie_url) else {
-                    log_diag(&format!("[{}] 前缀 {root} 未取到任何 Cookie", now_str()));
+                    no_cookie_strikes += 1;
+                    set_cookie_diag(format!(
+                        "前缀 {root} 未取到任何 Cookie（第 {no_cookie_strikes} 次）"
+                    ));
+                    // 已进入 OA 却连续 3 次拿不到会话 Cookie，说明该平台的
+                    // cookies_for_url 不可用（Android 文档标注 Unsupported），
+                    // 此时继续等待毫无意义，直接失败并回报诊断。
+                    if no_cookie_strikes >= 3 {
+                        let _ = window.destroy();
+                        let _ = handle.emit(
+                            "vpn-login-result",
+                            VpnLoginResponse {
+                                ok: false,
+                                prefix: None,
+                                cookies: None,
+                                message: Some(format!(
+                                    "无法读取登录会话：{}",
+                                    take_cookie_diag()
+                                )),
+                            },
+                        );
+                        return;
+                    }
                     continue;
                 };
 
