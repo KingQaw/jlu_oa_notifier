@@ -67,6 +67,103 @@ body {
   white-space: nowrap;
 }
 
+/* ---------- 访问模式（直连 / 网页版 VPN） ---------- */
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+/* 顶栏按钮在深蓝色底上，需要单独配色 */
+.vpn-btn {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.45);
+  color: #fff;
+  font-weight: 600;
+  min-width: 62px;
+}
+
+.vpn-btn:hover {
+  background: rgba(255, 255, 255, 0.26);
+}
+
+.vpn-btn.active {
+  background: #ffd166;
+  border-color: #ffd166;
+  color: #4a3200;
+}
+
+.vpn-panel {
+  flex: 0 0 auto;
+  padding: 12px 16px;
+  background: #fbfcfe;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.vpn-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.vpn-label {
+  flex: 0 0 66px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.vpn-input {
+  flex: 1 1 260px;
+  min-width: 0;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0 8px;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.vpn-input:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+.vpn-actions {
+  padding-top: 2px;
+}
+
+.vpn-status {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.vpn-status.warn {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.vpn-hint {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+  background: #fff;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+}
+
+.vpn-hint code {
+  background: #eef2f7;
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: 12px;
+}
+
 /* ---------- 按钮 ---------- */
 .btn {
   border: 1px solid var(--border);

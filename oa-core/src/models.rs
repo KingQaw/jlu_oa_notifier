@@ -46,6 +46,50 @@ pub struct NoticeDetail {
     pub attachments: Vec<Attachment>,
 }
 
+/// 访问模式：直连校内 OA，或经网页版 VPN（WebVPN 网关）转发。
+///
+/// 网页 VPN 的目标站点被编码成一段加密前缀，本程序无法推导，因此 `prefix`
+/// 直接采用用户在浏览器地址栏里看到的权威值（归一化到 `defaultroot/` 结尾），
+/// 后续所有请求都由它拼接相对路径得到。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "camelCase")]
+pub enum Access {
+    /// 直接访问 https://oa.jlu.edu.cn（校内网或已连 VPN 客户端）
+    Direct,
+    /// 经 https://vpn.jlu.edu.cn 的 WebVPN 转发
+    Vpn {
+        /// 站点前缀，例如
+        /// `https://vpn.jlu.edu.cn/https/<加密串>/defaultroot/`
+        prefix: String,
+        /// 网页 VPN 的会话票据（Cookie `wengine_vpn_ticketvpn_jlu_edu_cn` 的值）。
+        /// 该 Cookie 是 HttpOnly，WebView 的 JS 读不到，需用户在浏览器登录后复制；
+        /// 为空时仅能访问匿名可用的资源。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ticket: Option<String>,
+    },
+}
+
+impl Default for Access {
+    fn default() -> Self {
+        Access::Direct
+    }
+}
+
+impl Access {
+    /// 取出会话票据（仅 VPN 模式有）。
+    pub fn ticket(&self) -> Option<&str> {
+        match self {
+            Access::Direct => None,
+            Access::Vpn { ticket, .. } => ticket.as_deref(),
+        }
+    }
+
+    /// 是否为 VPN 模式。
+    pub fn is_vpn(&self) -> bool {
+        matches!(self, Access::Vpn { .. })
+    }
+}
+
 /// 列表查询参数。search_type: 0=标题 1=组织 2=内容；date_range: ""|"1"|"6"|"12"。
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,6 +99,9 @@ pub struct ListOptions {
     pub keyword: Option<String>,
     pub search_type: Option<u32>,
     pub date_range: Option<String>,
+    /// 访问模式；不传按直连处理，保持旧调用方兼容。
+    #[serde(default)]
+    pub access: Option<Access>,
 }
 
 #[cfg(test)]

@@ -7,9 +7,18 @@ import {
   searchOrgs,
   buildAttachmentUrl,
   fetchImage,
+  openVpnLogin,
 } from "./api";
 import { ORG_PRESETS } from "./orgs";
-import type { ListOptions, NoticeItem, NoticeDetail } from "./types";
+import {
+  NEED_VPN_LOGIN,
+  NETWORK_UNREACHABLE,
+  VPN_LOGIN_URL,
+  type Access,
+  type ListOptions,
+  type NoticeItem,
+  type NoticeDetail,
+} from "./types";
 
 const BASE = "https://oa.jlu.edu.cn/defaultroot/";
 const CHANNEL_ID = "179577";
@@ -41,6 +50,12 @@ const MAX_SKIP_EMPTY_PAGES = 5;
 
 const STORAGE_ORGS = "jlu-oa:followed-orgs";
 const STORAGE_TIME = "jlu-oa:time-range";
+const STORAGE_ACCESS_MODE = "jlu-oa:access-mode";
+const STORAGE_VPN_URL = "jlu-oa:vpn-url";
+const STORAGE_VPN_TICKET = "jlu-oa:vpn-ticket";
+
+/** 访问模式：直连校内 OA，或经网页版 VPN 转发。 */
+type AccessMode = "direct" | "vpn";
 
 interface State {
   /** 关注的组织（白名单）；空数组表示不过滤 */
@@ -57,6 +72,12 @@ interface State {
   loadingDetail: boolean;
   /** 上一次成功渲染的「查询条件 + 页码」快照，用于判断是否需要把列表滚回顶部 */
   listRenderKey: string;
+  /** 当前访问模式 */
+  accessMode: AccessMode;
+  /** 网页 VPN 站点地址（用户在地址栏里复制的完整 URL） */
+  vpnUrl: string;
+  /** 网页 VPN 会话票据（Cookie 值），可为空 */
+  vpnTicket: string;
 }
 
 const state: State = {
@@ -72,6 +93,9 @@ const state: State = {
   loadingList: false,
   loadingDetail: false,
   listRenderKey: "",
+  accessMode: "direct",
+  vpnUrl: "",
+  vpnTicket: "",
 };
 
 // ---------- DOM 骨架 ----------
@@ -82,8 +106,47 @@ app.innerHTML = `
       <span class="brand-title">吉林大学校内通知</span>
       <span class="brand-sub" id="totalInfo"></span>
     </div>
-    <button id="refreshBtn" class="btn" title="刷新">刷新</button>
+    <div class="topbar-actions">
+      <button id="vpnBtn" class="btn vpn-btn" title="配置网页版 VPN 访问">直连</button>
+      <button id="refreshBtn" class="btn" title="刷新">刷新</button>
+    </div>
   </header>
+
+  <div id="vpnPanel" class="vpn-panel hidden">
+    <div class="vpn-row">
+      <label class="vpn-label" for="vpnUrlInput">VPN 地址</label>
+      <input
+        id="vpnUrlInput"
+        type="text"
+        class="vpn-input"
+        placeholder="登录 VPN 并进入校内 OA 后，复制地址栏的完整网址粘贴到这里"
+        autocomplete="off"
+        spellcheck="false"
+      />
+    </div>
+    <div class="vpn-row">
+      <label class="vpn-label" for="vpnTicketInput">会话票据</label>
+      <input
+        id="vpnTicketInput"
+        type="password"
+        class="vpn-input"
+        placeholder="可选：Cookie wengine_vpn_ticketvpn_jlu_edu_cn 的值（F12 → Application → Cookies）"
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <button id="vpnOpenLoginBtn" class="btn" type="button">打开登录页</button>
+    </div>
+    <div class="vpn-row vpn-actions">
+      <button id="vpnApplyBtn" class="btn btn-primary" type="button">启用 VPN 访问</button>
+      <button id="vpnDisableBtn" class="btn" type="button">切回直连</button>
+      <span id="vpnStatus" class="vpn-status"></span>
+    </div>
+    <div class="vpn-hint">
+      说明：网页版 VPN 会把校内站点编码成一段加密地址。请先用浏览器登录
+      <code>vpn.jlu.edu.cn</code>，进入吉大 OA 后把地址栏网址粘贴到上面；本应用会复用该
+      地址访问列表与详情（票据是 HttpOnly Cookie，需按上面提示手动复制）。
+    </div>
+  </div>
 
   <div class="toolbar">
     <div class="field">
@@ -199,6 +262,14 @@ const el = {
   detailPane: $<HTMLElement>("#detailPane"),
   listPane: $<HTMLElement>("#listPane"),
   toast: $<HTMLElement>("#toast"),
+  vpnBtn: $<HTMLButtonElement>("#vpnBtn"),
+  vpnPanel: $<HTMLElement>("#vpnPanel"),
+  vpnUrlInput: $<HTMLInputElement>("#vpnUrlInput"),
+  vpnTicketInput: $<HTMLInputElement>("#vpnTicketInput"),
+  vpnOpenLoginBtn: $<HTMLButtonElement>("#vpnOpenLoginBtn"),
+  vpnApplyBtn: $<HTMLButtonElement>("#vpnApplyBtn"),
+  vpnDisableBtn: $<HTMLButtonElement>("#vpnDisableBtn"),
+  vpnStatus: $<HTMLElement>("#vpnStatus"),
 };
 
 // ---------- 工具 ----------
@@ -340,6 +411,14 @@ function loadPrefs() {
     if (t && TIME_OPTIONS.some((o) => o.value === t)) {
       state.timeRange = t as TimeRange;
     }
+    const mode = localStorage.getItem(STORAGE_ACCESS_MODE);
+    if (mode === "vpn" || mode === "direct") state.accessMode = mode;
+    state.vpnUrl = localStorage.getItem(STORAGE_VPN_URL) ?? "";
+    state.vpnTicket = localStorage.getItem(STORAGE_VPN_TICKET) ?? "";
+    // 旧版本可能存成短地址（base URL），这里补上 defaultroot，避免拼接后 404
+    if (state.vpnUrl && !state.vpnUrl.includes("defaultroot")) {
+      state.vpnUrl = `${state.vpnUrl.replace(/\/+$/, "")}/defaultroot/`;
+    }
   } catch {
     /* 本地配置损坏时忽略，走默认值 */
   }
@@ -349,9 +428,80 @@ function savePrefs() {
   try {
     localStorage.setItem(STORAGE_ORGS, JSON.stringify(state.followedOrgs));
     localStorage.setItem(STORAGE_TIME, state.timeRange);
+    localStorage.setItem(STORAGE_ACCESS_MODE, state.accessMode);
+    localStorage.setItem(STORAGE_VPN_URL, state.vpnUrl);
+    localStorage.setItem(STORAGE_VPN_TICKET, state.vpnTicket);
   } catch {
     /* 忽略写入失败，不影响使用 */
   }
+}
+
+// ---------- 访问模式（直连 / 网页版 VPN） ----------
+
+/**
+ * 当前访问模式对应的参数，交给 Rust 侧构造请求地址。
+ *
+ * VPN 模式下若还没填地址，返回 null —— 调用方需要先提示用户去配置，
+ * 否则后端会因地址为空直接报错。
+ */
+function currentAccess(): Access | null {
+  if (state.accessMode !== "vpn") return { mode: "direct" };
+  const prefix = state.vpnUrl.trim();
+  if (!prefix) return null;
+  return {
+    mode: "vpn",
+    prefix,
+    ticket: state.vpnTicket.trim() || undefined,
+  };
+}
+
+/** 更新顶栏按钮文字与状态提示。 */
+function updateVpnUi() {
+  const on = state.accessMode === "vpn";
+  el.vpnBtn.textContent = on ? "VPN" : "直连";
+  el.vpnBtn.classList.toggle("active", on);
+
+  if (!on) {
+    el.vpnStatus.textContent = "当前：直连校内 OA";
+    el.vpnStatus.classList.remove("warn");
+    return;
+  }
+  if (!state.vpnUrl.trim()) {
+    el.vpnStatus.textContent = "已选 VPN，但尚未填写 VPN 地址";
+    el.vpnStatus.classList.add("warn");
+    return;
+  }
+  el.vpnStatus.textContent = state.vpnTicket.trim()
+    ? "当前：经网页版 VPN 访问（已带会话票据）"
+    : "当前：经网页版 VPN 访问（未填票据，可能提示需要登录）";
+  el.vpnStatus.classList.remove("warn");
+}
+
+/** 切换面板显隐，并在打开时把已保存的值回填到输入框。 */
+function toggleVpnPanel(show?: boolean) {
+  const willShow = show ?? el.vpnPanel.classList.contains("hidden");
+  el.vpnPanel.classList.toggle("hidden", !willShow);
+  if (willShow) {
+    el.vpnUrlInput.value = state.vpnUrl;
+    el.vpnTicketInput.value = state.vpnTicket;
+    el.vpnUrlInput.focus();
+  }
+}
+
+/**
+ * 把后端返回的错误转成用户能看懂的话，并给出下一步动作。
+ * - NEED_VPN_LOGIN：网页 VPN 未登录 / 票据过期
+ * - NETWORK_UNREACHABLE：直连连不上，多半是没连校园网
+ */
+function describeError(e: unknown): string {
+  const msg = String(e);
+  if (msg.includes(NEED_VPN_LOGIN)) {
+    return "网页版 VPN 未登录或票据已过期，请点右上角「直连/VPN」重新登录并更新票据";
+  }
+  if (msg.includes(NETWORK_UNREACHABLE)) {
+    return "连不上校内网。若当前不在校园网，请点右上角「直连/VPN」改用 VPN 访问";
+  }
+  return msg;
 }
 
 // ---------- 列表加载 ----------
@@ -362,6 +512,9 @@ function currentQueryKey(): string {
     state.timeRange,
     state.keyword,
     state.searchType,
+    // 切换访问模式后列表内容会变，必须进 key，否则不会回到顶部也不触发重载判断
+    state.accessMode,
+    state.vpnUrl,
   ].join("\u0001");
 }
 
@@ -375,7 +528,21 @@ function buildOpts(page: number): ListOptions {
     searchType: state.searchType,
     // 站方 searchDate 必须配合关键词才生效，这里统一由客户端按今天/近三天/近一周过滤
     dateRange: undefined,
+    access: currentAccess() ?? undefined,
   };
+}
+
+/**
+ * 启动加载前的访问模式校验。
+ * VPN 模式下必须先填地址，否则宁可拦住也不静默退回直连——那会请求到校内 OA，
+ * 在校外表现为连不上，用户很难判断原因。
+ */
+function ensureAccessReady(): boolean {
+  if (state.accessMode !== "vpn") return true;
+  if (state.vpnUrl.trim()) return true;
+  toast("已切到 VPN 访问，但还没有填写 VPN 地址");
+  toggleVpnPanel(true);
+  return false;
 }
 
 /** 判断一页是否已经翻过时间线（只看非置顶项——置顶往往是几天前的旧通知）。 */
@@ -404,6 +571,7 @@ function setPagerMode() {
 /** 关注流模式（今天 / 近三天 / 近一周）：自动往后抓取，直到越过时间线。 */
 async function loadFeed() {
   if (state.loadingList) return;
+  if (!ensureAccessReady()) return;
   state.loadingList = true;
   setLoading(true, "list", "加载中…");
 
@@ -457,7 +625,7 @@ async function loadFeed() {
     el.list.scrollTop = 0;
   } catch (e) {
     el.listStatus.textContent = "加载失败，请检查网络后重试";
-    toast(`加载失败：${String(e)}`);
+    toast(`加载失败：${describeError(e)}`);
   } finally {
     state.loadingList = false;
     setLoading(false, "list");
@@ -467,6 +635,7 @@ async function loadFeed() {
 /** 浏览模式（全部时间）：沿用服务端分页，本地按关注组织过滤。 */
 async function loadBrowse(page: number) {
   if (state.loadingList) return;
+  if (!ensureAccessReady()) return;
   state.loadingList = true;
   setLoading(true, "list", "加载中…");
 
@@ -517,7 +686,7 @@ async function loadBrowse(page: number) {
     }
   } catch (e) {
     el.listStatus.textContent = "加载失败，请检查网络后重试";
-    toast(`加载失败：${String(e)}`);
+    toast(`加载失败：${describeError(e)}`);
   } finally {
     state.loadingList = false;
     setLoading(false, "list");
@@ -586,11 +755,11 @@ async function openDetail(id: string) {
   setLoading(true, "detail");
   el.detail.innerHTML = '<div class="placeholder">加载详情中…</div>';
   try {
-    const d = await fetchDetail(id);
+    const d = await fetchDetail(id, currentAccess() ?? undefined);
     renderDetail(d);
   } catch (e) {
     el.detail.innerHTML = '<div class="placeholder">详情加载失败</div>';
-    toast(`详情加载失败：${String(e)}`);
+    toast(`详情加载失败：${describeError(e)}`);
   } finally {
     state.loadingDetail = false;
     setLoading(false, "detail");
@@ -717,7 +886,7 @@ async function inlineImages(root: HTMLElement) {
       if (!src || src.startsWith("data:")) return;
       if (!/^https:\/\/oa\.jlu\.edu\.cn\//i.test(src)) return;
       try {
-        img.src = await fetchImage(src);
+        img.src = await fetchImage(src, currentAccess() ?? undefined);
       } catch {
         /* 保留原始 URL，交给 WebView 兜底 */
       }
@@ -734,6 +903,7 @@ async function downloadAttachment(
       informationId,
       a.filename,
       a.name,
+      currentAccess() ?? undefined,
     );
     await openUrl(attachmentUrl);
   } catch (e) {
@@ -836,7 +1006,7 @@ el.orgSearch.addEventListener("input", () => {
     if (orgSearchTimer) clearTimeout(orgSearchTimer);
     orgSearchTimer = window.setTimeout(async () => {
       try {
-        const remote = await searchOrgs(q);
+        const remote = await searchOrgs(q, currentAccess() ?? undefined);
         const merged = [...new Set([...ORG_PRESETS, ...remote])];
         for (const s of state.followedOrgs) {
           if (!merged.includes(s)) merged.push(s);
@@ -942,8 +1112,52 @@ el.jumpInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") el.jumpBtn.click();
 });
 
+// ---------- 访问模式（直连 / 网页版 VPN） ----------
+el.vpnBtn.addEventListener("click", () => toggleVpnPanel());
+
+el.vpnOpenLoginBtn.addEventListener("click", () => {
+  void openVpnLogin(VPN_LOGIN_URL)
+    .then(() => toast("已打开 VPN 登录页，登录后复制地址栏网址回来粘贴"))
+    .catch((e) => toast(`打开登录页失败：${String(e)}`));
+});
+
+el.vpnApplyBtn.addEventListener("click", () => {
+  const url = el.vpnUrlInput.value.trim();
+  if (!url) {
+    toast("请先粘贴登录 VPN 后进入 OA 的完整地址");
+    el.vpnUrlInput.focus();
+    return;
+  }
+  if (!/^https?:\/\//i.test(url)) {
+    toast("VPN 地址需要以 https:// 开头");
+    return;
+  }
+  state.vpnUrl = url;
+  state.vpnTicket = el.vpnTicketInput.value.trim();
+  state.accessMode = "vpn";
+  savePrefs();
+  updateVpnUi();
+  toggleVpnPanel(false);
+  toast("已启用 VPN 访问");
+  void reload();
+});
+
+el.vpnDisableBtn.addEventListener("click", () => {
+  if (state.accessMode === "direct") {
+    toggleVpnPanel(false);
+    return;
+  }
+  state.accessMode = "direct";
+  savePrefs();
+  updateVpnUi();
+  toggleVpnPanel(false);
+  toast("已切回直连");
+  void reload();
+});
+
 // ---------- 启动 ----------
 loadPrefs();
 updateOrgBtn();
 updateTimeSeg();
+updateVpnUi();
 void reload();

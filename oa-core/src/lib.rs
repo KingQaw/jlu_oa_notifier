@@ -10,10 +10,11 @@ pub mod parse;
 #[cfg(feature = "http")]
 pub mod fetch;
 
-pub use models::{Attachment, ListOptions, ListResult, NoticeDetail, NoticeItem};
+pub use models::{Access, Attachment, ListOptions, ListResult, NoticeDetail, NoticeItem};
 pub use parse::{parse_detail, parse_list, parse_orgs};
 
 #[cfg(feature = "http")]
 pub use fetch::{
     build_attachment_url, fetch_detail, fetch_image, fetch_list, search_orgs, BASE, CHANNEL_ID,
+    NEED_LOGIN, NETWORK_UNREACHABLE,
 };
