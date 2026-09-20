@@ -57,14 +57,21 @@ struct VpnLoginResponse {
     message: Option<String>,
 }
 
-/// 从任意网关转发地址中提取 `<加密串>`。
+/// 从网关转发地址中取出 `<加密串>` 那一段（仅用于日志/诊断）。
 ///
-/// 网瑞达把目标站点编码成一段加密串，形如
-/// `https://vpn.jlu.edu.cn/https/<加密串>/<目标站内路径>`。
-/// 关键点：**这段加密串与目标站点无关**——访问用户门户时它是
-/// `.../https/<加密串>/user/portal`，访问 oa 时是
-/// `.../https/<加密串>/defaultroot/...`，两处的 `<加密串>` 一致。
-/// 因此登录成功后从用户门户地址里就能把它取出来，再拼上 oa 的相对路径即可。
+/// ⚠️ 曾经的误判：一度以为这段加密串"与目标站点无关"、可以从门户地址里取一次
+/// 再拼到 oa 前面。实测证明它是**按目标资源分别生成的**——同一会话下
+/// 门户与 oa 的加密串并不相同：
+///
+/// ```text
+/// 门户/tpass: 48714f71342f7a336d582f7e285737375 ccd605402c6dbebb4864756174f
+/// oa:         48714f71342f7a336d582f7e2857373750cd3d1004df80a0b5971c1b1a
+/// ```
+///
+/// 所以绝不能复用，也不能自己实现门户那套 AES 逻辑（见 `portal.js` 的
+/// `wrdvpnKey`/`wrdvpnIV`，密钥由页面按会话注入）。正确做法是复用门户
+/// 自己生成出来的 oa 地址——即用户在窗口里点进「吉大 OA」后地址栏里的那个。
+#[allow(dead_code)]
 fn extract_secret(url: &str) -> Option<String> {
     const MARK: &str = "/https/";
     let rest = url.split_once(MARK)?.1;
@@ -77,6 +84,9 @@ fn extract_secret(url: &str) -> Option<String> {
 }
 
 /// 用加密串拼出 oa 的站点根前缀。
+///
+/// 仅用于自检/诊断。实际流程不这样构造 URL，原因见 [`extract_secret`]。
+#[allow(dead_code)]
 fn oa_root_from_secret(secret: &str) -> String {
     format!("https://vpn.jlu.edu.cn/https/{secret}/defaultroot/")
 }
@@ -109,19 +119,51 @@ fn cookies_for(window: &tauri::WebviewWindow, url: &tauri::Url) -> Option<String
 /// 用候选会话真实调一次列表接口，确认它确实可用。
 ///
 /// 只凭"页面上出现了 defaultroot 地址"是不够的：`/login` 本身也会被网关转发，
-/// 用户可能还没登录成功；只有能真正取到数据才算成功。
-async fn verify_session(prefix: &str, cookies: &str) -> bool {
+/// 用户可能还没登录成功。这里要求**真的解析出条目**，因为"请求成功但 0 条"
+/// 既可能是会话无效，也可能是页面结构变了——两者都不能算登录成功。
+async fn verify_session(prefix: &str, cookies: &str) -> (bool, String) {
     let access = Access::Vpn {
         prefix: prefix.to_string(),
         cookies: Some(cookies.to_string()),
     };
-    oa_core::fetch_list(&ListOptions {
+    match oa_core::fetch_list(&ListOptions {
         access: Some(access),
         page: Some(1),
         ..Default::default()
     })
     .await
-    .is_ok()
+    {
+        Ok(list) => {
+            let n = list.items.len();
+            let ok = n > 0;
+            (
+                ok,
+                format!("前 {} 条，解析到 {n} 条（total={}）", list.items.len(), list.total),
+            )
+        }
+        Err(e) => (false, format!("请求失败：{e}")),
+    }
+}
+
+/// 简易时间戳（秒级），仅用于日志行前缀。
+fn now_str() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs().to_string())
+        .unwrap_or_else(|_| "?".to_string())
+}
+
+/// 把登录过程的诊断信息写到临时目录，便于排查"登录了但取不到数据"。
+fn log_diag(line: &str) {
+    use std::io::Write;
+    let path = std::env::temp_dir().join("jlu-oa-vpn-login.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(f, "{line}");
+    }
 }
 
 /// 打开内置登录窗口，用户登录后自动抓取并验证会话，结果通过事件回传。
@@ -157,12 +199,16 @@ async fn vpn_login(app: tauri::AppHandle) -> Result<(), String> {
             }
         };
 
+        // 门户里的磁贴是外链，点击时 WebView2 默认会尝试开新窗口；Tauri 默认
+        // 不处理该请求，表现为"点了没反应"。这里让当前窗口自己加载，
+        // 用户点击磁贴就能真正进入校内站点（例如吉大 OA）。
+        let nav_handle = handle.clone();
         let window = match tauri::WebviewWindowBuilder::new(
             &handle,
             LOGIN_WINDOW_LABEL,
             tauri::WebviewUrl::External(url),
         )
-        .title("登录吉大 VPN（登录成功后本窗口会自动关闭）")
+        .title("登录 VPN 后点进「吉大 OA」")
         .inner_size(920.0, 760.0)
         .center()
         // 不设置自定义 user_agent：WebView2 在自定义 UA 下出现过不渲染
@@ -171,6 +217,34 @@ async fn vpn_login(app: tauri::AppHandle) -> Result<(), String> {
         // 诊断用：右键可「检查元素」，出现黑屏时能直接看到网络与控制台报错。
         // 该窗口只用于登录，保留 devtools 的风险可接受。
         .devtools(true)
+        // 被 target="_blank" / window.open 打开的链接：交给当前窗口导航，
+        // 而不是让 WebView2 弹一个我们看不到的新窗口
+        .on_new_window(move |new_url, _features| {
+            if let Some(w) = nav_handle.get_webview_window(LOGIN_WINDOW_LABEL) {
+                let _ = w.navigate(new_url);
+            }
+            tauri::webview::NewWindowResponse::Deny
+        })
+        // 把页面里所有外链改造成"当前窗口打开"，双保险
+        .initialization_script(
+            r#"
+            (function () {
+              try {
+                window.open = function (u) { if (u) location.href = u; return null; };
+                document.addEventListener('click', function (ev) {
+                  var a = ev.target && ev.target.closest ? ev.target.closest('a[href]') : null;
+                  if (!a) return;
+                  var href = a.getAttribute('href') || '';
+                  if (!href || href.charAt(0) === '#') return;
+                  if (a.target && a.target !== '_self') {
+                    ev.preventDefault();
+                    location.href = a.href;
+                  }
+                }, true);
+              } catch (e) {}
+            })();
+            "#,
+        )
         .build()
         {
             Ok(w) => w,
@@ -238,11 +312,17 @@ async fn vpn_login(app: tauri::AppHandle) -> Result<(), String> {
             // 地址不含加密串，能否配合会话工作未经证实，不把不确定性放进主流程。
             let mut candidates: Vec<String> = Vec::new();
             if let Some(u) = &current {
+                // 唯一可信的来源：地址里已经出现 defaultroot，即用户真的进入了 OA。
+                //
+                // 刻意不再"从当前地址提取加密串去拼 OA 前缀"：门户页面自身也在
+                // /https/<加密串>/ 之下，那样会把门户的加密串误当成 OA 的。
+                // 加密串由门户的 JS（AES）按目标资源生成，本程序不复制该逻辑，
+                // 只复用门户自己生成出来的那个 OA 地址。
                 if let Some(root) = vpn_root_of(u) {
+                    log_diag(&format!("[{}] 已进入 OA：{u}", now_str()));
                     candidates.push(root);
-                }
-                if let Some(secret) = extract_secret(u) {
-                    candidates.push(oa_root_from_secret(&secret));
+                } else if u.contains("/https/") && u.contains("/user/portal") {
+                    log_diag(&format!("[{}] 当前在门户页，等待用户点进吉大 OA", now_str()));
                 }
             }
             candidates.dedup();
@@ -256,10 +336,27 @@ async fn vpn_login(app: tauri::AppHandle) -> Result<(), String> {
                     continue;
                 };
                 let Some(cookies) = cookies_for(&window, &cookie_url) else {
+                    log_diag(&format!("[{}] 前缀 {root} 未取到任何 Cookie", now_str()));
                     continue;
                 };
 
-                if tauri::async_runtime::block_on(verify_session(&root, &cookies)) {
+                // 只记录 Cookie 的“名字”，不落盘具体值（避免把会话写进日志）
+                let cookie_names = cookies
+                    .split(';')
+                    .filter_map(|kv| kv.split('=').next())
+                    .map(|s| s.trim())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                log_diag(&format!(
+                    "[{}] 尝试前缀 {root}｜Cookie 名: {cookie_names}",
+                    now_str()
+                ));
+
+                let (ok, detail) =
+                    tauri::async_runtime::block_on(verify_session(&root, &cookies));
+                log_diag(&format!("[{}] 验证结果 ok={ok}｜{detail}", now_str()));
+
+                if ok {
                     let _ = window.destroy();
                     let _ = handle.emit(
                         "vpn-login-result",
@@ -312,13 +409,34 @@ pub fn run() {
 mod tests {
     use super::*;
 
-    /// 加密串与目标站点无关：用户门户与 oa 地址里的那一段必须一致。
+    /// 加密串按目标资源生成：门户与 oa 的加密串**不同**（实测数据）。
+    /// 这条测试锁住那个曾经导致 bug 的误判——绝不能把门户的加密串复用到 oa。
     #[test]
-    fn extracts_secret_from_any_forwarded_url() {
-        let portal = "https://vpn.jlu.edu.cn/https/48714f7134abcdef/user/portal";
-        let oa = "https://vpn.jlu.edu.cn/https/48714f7134abcdef/defaultroot/PortalInformation!jldxList.action";
-        assert_eq!(extract_secret(portal).unwrap(), "48714f7134abcdef");
-        assert_eq!(extract_secret(oa).unwrap(), "48714f7134abcdef");
+    fn secret_differs_per_target_resource() {
+        let portal = "https://vpn.jlu.edu.cn/https/48714f71342f7a336d582f7e285737375ccd605402c6dbebb4864756174f/user/portal";
+        let oa = "https://vpn.jlu.edu.cn/https/48714f71342f7a336d582f7e2857373750cd3d1004df80a0b5971c1b1a/defaultroot/PortalInformation!jldxList.action";
+        let p = extract_secret(portal).unwrap();
+        let o = extract_secret(oa).unwrap();
+        assert_ne!(p, o, "门户与 oa 的加密串不应相同");
+        // 两者有共同前缀，但尾部不同
+        assert!(p.starts_with("48714f71342f7a336d582f7e28573737"));
+        assert!(o.starts_with("48714f71342f7a336d582f7e28573737"));
+    }
+
+    /// 只有地址里真的出现 defaultroot 才认作"已进入 OA"。
+    #[test]
+    fn only_defaultroot_counts_as_oa() {
+        // 门户页面不能当成 OA 前缀
+        assert_eq!(
+            vpn_root_of("https://vpn.jlu.edu.cn/https/abc/user/portal"),
+            None
+        );
+        assert_eq!(vpn_root_of("https://vpn.jlu.edu.cn/login"), None);
+        // 真正的 OA 地址可以
+        assert_eq!(
+            vpn_root_of("https://vpn.jlu.edu.cn/https/abc/defaultroot/index.jsp").unwrap(),
+            "https://vpn.jlu.edu.cn/https/abc/defaultroot/"
+        );
     }
 
     #[test]

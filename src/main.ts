@@ -526,10 +526,11 @@ function setVpnProgress(on: boolean, text = "等待登录…") {
   el.vpnLoginBtn.disabled = on;
   if (on) {
     el.vpnProgressText.textContent = text;
-    el.vpnAutoHint.textContent = "请在弹出的窗口中完成登录，成功后将自动配置并启用。";
+    el.vpnAutoHint.textContent =
+      "请在窗口里登录，登录后点进「校内办公 / 吉大 OA」，进入后窗口会自动关闭。";
   } else {
     el.vpnAutoHint.textContent =
-      "点击后在应用内登录（支持扫码 / 账号密码），登录成功会自动配置并启用，无需手动复制任何内容。";
+      "点击后在应用内登录，登录后点进「吉大 OA」，会自动配置并启用，无需手动复制任何内容。";
   }
 }
 
