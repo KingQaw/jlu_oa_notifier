@@ -554,22 +554,35 @@ strip = true
 
 **1) 必须先签名**（未签名无法分发，也无法覆盖升级）
 
-首次执行 `tauri android build` 时 Tauri 会交互式引导创建/配置签名；也可手动准备：
+先生成 keystore（已存在则跳过）：
 
 ```powershell
-keytool -genkey -v -keystore jlu-oa.keystore -alias jlu-oa -keyalg RSA -keysize 2048 -validity 10000
+keytool -genkey -v -keystore D:/keys/jlu-oa.keystore -alias jlu-oa -keyalg RSA -keysize 2048 -validity 10000
 ```
 
-然后创建 `src-tauri\gen\android\keystore.properties`：
+然后**用脚本接入签名配置**（推荐）：
 
-```properties
-storeFile=D:/keys/jlu-oa.keystore
-storePassword=你的密码
-keyAlias=jlu-oa
-keyPassword=你的密码
+```bash
+export ANDROID_KEYSTORE_PATH='D:/keys/jlu-oa.keystore'
+export ANDROID_KEYSTORE_PASSWORD='你的口令'
+export ANDROID_KEY_ALIAS='jlu-oa'
+export ANDROID_KEY_PASSWORD='你的口令'
+node scripts/setup-android-signing.mjs
 ```
+
+脚本会写入 `src-tauri/gen/android/keystore.properties`，并**幂等地**在
+`app/build.gradle.kts` 里注入 `signingConfigs` 与 release 的 `signingConfig`
+（已注入则跳过）。
+
+> 为什么要脚本：`src-tauri/gen/` 被 gitignore，且 `npm run android:init` 会
+> **重新生成整个工程**、覆盖手改的 gradle 文件。所以 init 之后重跑一次本脚本即可。
+> 口令优先从环境变量读取，避免明文进入 shell 历史。
 
 > **务必备份 keystore 文件和密码**。丢了就再也无法给已发布的 app 出升级包，只能换包名重新上架。
+
+> 注意：**debug 与 release 签名不同，不能互相覆盖安装**。从 debug 版切到
+> release 版需先 `adb uninstall cn.jlu.oa.notifier`（会清掉应用数据，如已保存的
+> VPN 配置）。
 
 **2) 构建**
 
