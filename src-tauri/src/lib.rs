@@ -228,22 +228,17 @@ async fn vpn_login(app: tauri::AppHandle) -> Result<(), String> {
             }
             tauri::webview::NewWindowResponse::Deny
         })
-        // 把页面里所有外链改造成"当前窗口打开"，双保险
+        // 只把 window.open 收敛到当前窗口。
+        //
+        // ⚠️ 刻意**不拦截 <a> 的点击**。曾经在这里用捕获阶段监听 +
+        // preventDefault 把 target="_blank" 链接改成 location.href，
+        // 结果绕过了门户自己的点击处理（门户要靠它生成加密地址并记一次访问），
+        // 表现为"点击无反应"。让门户的原生点击照常执行才可靠。
         .initialization_script(
             r#"
             (function () {
               try {
                 window.open = function (u) { if (u) location.href = u; return null; };
-                document.addEventListener('click', function (ev) {
-                  var a = ev.target && ev.target.closest ? ev.target.closest('a[href]') : null;
-                  if (!a) return;
-                  var href = a.getAttribute('href') || '';
-                  if (!href || href.charAt(0) === '#') return;
-                  if (a.target && a.target !== '_self') {
-                    ev.preventDefault();
-                    location.href = a.href;
-                  }
-                }, true);
               } catch (e) {}
             })();
             "#,
