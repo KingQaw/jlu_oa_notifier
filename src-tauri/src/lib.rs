@@ -152,6 +152,36 @@ fn show_login_status(window: &tauri::WebviewWindow, text: &str) {
     let _ = window.eval(js);
 }
 
+/// 登录成功后替换登录窗口的页面内容。
+///
+/// 为什么需要它：**wry 在 Android 上的 destroy_webview 只清理 Rust 侧注册表，
+/// 不会移除 Android 的 View**（见 wry src/android/mod.rs），因此
+/// `WebviewWindow::destroy()` 在该平台返回成功但窗口仍然可见（实测
+/// "窗口仍存在=true"）。既然平台不支持销毁，就退而求其次把页面换成成功提示，
+/// 让 OA 内容消失、用户不再困在里面；随后仍会尝试关闭窗口。
+fn show_login_success(window: &tauri::WebviewWindow) {
+    let js = r#"
+(function () {
+  try {
+    var d = document.createElement('div');
+    d.id = '__oaDone';
+    d.setAttribute('style',
+      'position:fixed;inset:0;z-index:2147483647;background:#ffffff;' +
+      'display:flex;flex-direction:column;align-items:center;justify-content:center;' +
+      'font:16px/1.8 system-ui,-apple-system,"Microsoft YaHei",sans-serif;color:#1f2937;' +
+      'text-align:center;padding:24px;');
+    d.innerHTML =
+      '<div style="width:64px;height:64px;border-radius:50%;background:#1a5fb4;' +
+      'color:#fff;font-size:34px;line-height:64px;margin-bottom:18px;">&#10003;</div>' +
+      '<div style="font-size:19px;font-weight:700;margin-bottom:6px;">VPN 登录成功</div>' +
+      '<div style="color:#7b8794;">已自动配置完成，本窗口即将关闭</div>';
+    (document.body || document.documentElement).appendChild(d);
+  } catch (e) {}
+})();
+"#;
+    let _ = window.eval(js);
+}
+
 /// 读取该地址在 webview 中的全部 Cookie，拼成请求可用的 Cookie 头。
 ///
 /// `cookies_for_url` 是同步方法，返回的正是"会发给该 URL 的那些 Cookie"，
@@ -522,8 +552,11 @@ async fn vpn_login(app: tauri::AppHandle) -> Result<(), String> {
                             message: None,
                         },
                     );
-                    // 在页面留痕：用于判断流程是否真的走到关闭这一步
-                    show_login_status(&window, "验证通过，正在关闭窗口…");
+                    // 先替换成成功页：Android 上窗口可能关不掉（见
+                    // show_login_success 的说明），至少让用户看到明确结果、
+                    // 不再停留在 OA 页面上。
+                    show_login_success(&window);
+                    std::thread::sleep(std::time::Duration::from_millis(250));
                     // 关窗必须在**主线程**执行：本函数运行在 spawn 出来的后台线程，
                     // 而 Android 上直接在后台线程 destroy() 不生效（实测窗口不关）。
                     let destroy_err = Arc::new(Mutex::new(String::new()));
