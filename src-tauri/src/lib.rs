@@ -5,9 +5,6 @@ use tauri::{Emitter, Manager};
 
 /// 网页版 VPN 入口。
 const VPN_LOGIN_URL: &str = "https://vpn.jlu.edu.cn/login";
-/// 与 oa-core 抓取层保持一致的 UA：直接访问 oa 主页面拿 defaultroot 加密段
-/// 会比较稳定，UA 差异过大时网关可能拒绝。
-const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 const LOGIN_WINDOW_LABEL: &str = "vpn-login";
 const LOGIN_TIMEOUT_SECS: u64 = 300;
 
@@ -167,7 +164,13 @@ async fn vpn_login(app: tauri::AppHandle) -> Result<(), String> {
         )
         .title("登录吉大 VPN（登录成功后本窗口会自动关闭）")
         .inner_size(920.0, 760.0)
-        .user_agent(UA)
+        .center()
+        // 不设置自定义 user_agent：WebView2 在自定义 UA 下出现过不渲染
+        // （黑屏/白屏）的已知问题，而这里本来也不需要伪装 UA。
+        //
+        // 诊断用：右键可「检查元素」，出现黑屏时能直接看到网络与控制台报错。
+        // 该窗口只用于登录，保留 devtools 的风险可接受。
+        .devtools(true)
         .build()
         {
             Ok(w) => w,
