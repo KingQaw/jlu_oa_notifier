@@ -1,0 +1,29 @@
+[package]
+name = "oa-core"
+version = "0.1.0"
+edition = "2021"
+description = "吉林大学电子校务平台（校内通知）抓取与解析核心库"
+
+[features]
+default = ["http"]
+# 关闭 http 特性后仅保留纯 Rust 的解析逻辑（无系统依赖），便于离线验证与测试。
+http = ["dep:reqwest", "dep:base64"]
+
+[dependencies]
+scraper = "0.20"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"], optional = true }
+base64 = { version = "0.22", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[[example]]
+name = "scrape_check"
+required-features = []
+
+[[example]]
+name = "fetch_check"
+required-features = ["http"]

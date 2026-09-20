@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "默认能力：核心 API 与打开外部链接（原文 / 附件下载）",
+  "windows": ["main"],
+  "permissions": ["core:default", "opener:default"]
+}

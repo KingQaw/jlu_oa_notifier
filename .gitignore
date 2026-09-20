@@ -1,0 +1,32 @@
+# 依赖与构建产物
+node_modules/
+dist/
+src-tauri/target/
+target/
+oa-core/target/
+
+# 本地开发工具链（仅本机验证用，勿提交）
+.dev/
+.npm-cache/
+
+# Tauri 移动端生成目录
+src-tauri/gen/
+
+# 验证脚本依赖
+scripts/verify/node_modules/
+scripts/verify/.npm-cache/
+
+# 临时抓取样本 / 测试产物
+oa_*.html
+d_*.html
+list*.html
+css_*.css
+cookies.txt
+hello_test.rs
+hello_test
+t.c
+t.o
+
+# 系统与编辑器
+.DS_Store
+*.log
