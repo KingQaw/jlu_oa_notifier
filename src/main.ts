@@ -610,6 +610,14 @@ function onVpnLoginResult(res: VpnLoginResult) {
   el.vpnTicketInput.value = state.vpnTicket;
   toggleVpnPanel(false);
   toast("VPN 登录成功，已自动启用");
+  // 由主窗口主动关闭登录窗口。
+  //
+  // 为什么不在 Rust 侧关：实测 Android 上后台线程里的 destroy()/close() 都不生效
+  // （诊断条显示流程已走到"正在关闭窗口"，窗口却一直存在）。主窗口运行在正常的
+  // Tauri 上下文里，由它调用 close_vpn_login 更可靠。
+  void closeVpnLogin()
+    .then(() => console.log("[vpn] 登录窗口已关闭"))
+    .catch((e) => console.warn("[vpn] 关闭登录窗口失败：", e));
   void reload();
 }
 
