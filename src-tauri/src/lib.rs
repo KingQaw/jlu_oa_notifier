@@ -222,18 +222,35 @@ fn now_str() -> String {
 }
 
 /// 把登录过程的诊断信息写到临时目录，便于排查"登录了但取不到数据"。
+/// 日志文件位置。
+///
+/// Android 上 `std::env::temp_dir()`（%TEMP%）应用进程读不到，而 logcat 也不一定
+/// 转发 Rust 的 stdout。改用**应用私有缓存目录**：debug 包可用
+/// `adb shell run-as cn.jlu.oa.notifier cat cache/jlu-oa.log` 直接读取，
+/// 这是真机上唯一稳定可读的通道。
+fn diag_log_path() -> std::path::PathBuf {
+    if let Some(app) = APP_HANDLE.get() {
+        if let Ok(dir) = app.path().app_cache_dir() {
+            let _ = std::fs::create_dir_all(&dir);
+            return dir.join("jlu-oa.log");
+        }
+    }
+    std::env::temp_dir().join("jlu-oa-vpn-login.log")
+}
+
+/// 保存 AppHandle，供 `log_diag` 解析可写目录。
+static APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+
 fn log_diag(line: &str) {
     use std::io::Write;
-    // 桌面：写临时文件；Android 上该路径应用读不到，因此同时输出到 stdout，
-    // Tauri 会把 Rust 的 stdout 转发到 logcat（标签 RustStdoutStderr），
-    // 这是真机上最可靠的日志通道：
-    //   adb logcat -s RustStdoutStderr
+    // 真机可读通道 1：stdout（若设备/构建转发到 logcat）
     println!("[jlu-oa] {line}");
-    let path = std::env::temp_dir().join("jlu-oa-vpn-login.log");
+    // 真机可读通道 2：应用私有目录文件（run-as 可读），最可靠
+    let path = diag_log_path();
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(path)
+        .open(&path)
     {
         let _ = writeln!(f, "{line}");
     }
@@ -245,6 +262,7 @@ fn log_diag(line: &str) {
 /// 会话由 webview 的 cookie 接口读取（HttpOnly 也能读到）。
 #[tauri::command]
 async fn vpn_login(app: tauri::AppHandle) -> Result<(), String> {
+    let _ = APP_HANDLE.set(app.clone());
     // 已存在登录窗口时先关掉，避免出现两个
     if let Some(existing) = app.get_webview_window(LOGIN_WINDOW_LABEL) {
         let _ = existing.destroy();
