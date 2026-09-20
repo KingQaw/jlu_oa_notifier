@@ -213,7 +213,8 @@ async fn vpn_login(app: tauri::AppHandle) -> Result<(), String> {
         )
         .title("登录 VPN 后点进「吉大 OA」")
         .inner_size(920.0, 760.0)
-        .center()
+        // 注意：不要用 .center()——它是桌面专属方法，Android 上不存在
+        // （实测 Android 构建报 E0599: no method named `center`）。
         // 不设置自定义 user_agent：WebView2 在自定义 UA 下出现过不渲染
         // （黑屏/白屏）的已知问题，而这里本来也不需要伪装 UA。
         //
