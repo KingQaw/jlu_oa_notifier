@@ -123,6 +123,13 @@ app.innerHTML = `
     <section class="list-pane" id="listPane">
       <div id="listStatus" class="list-status"></div>
       <ul id="list" class="list"></ul>
+      <div id="listLoading" class="pane-overlay hidden" role="status" aria-live="polite">
+        <div class="loading-card">
+          <div class="spinner"></div>
+          <div id="listLoadingText" class="loading-text">加载中…</div>
+          <div id="listLoadingSub" class="loading-sub"></div>
+        </div>
+      </div>
       <div class="pager">
         <div id="pagerBrowse" class="pager-group">
           <button id="firstBtn" class="btn">首页</button>
@@ -144,6 +151,12 @@ app.innerHTML = `
     <section class="detail-pane" id="detailPane">
       <div id="detail" class="detail">
         <div class="placeholder">← 选择左侧通知查看详情</div>
+      </div>
+      <div id="detailLoading" class="pane-overlay hidden" role="status" aria-live="polite">
+        <div class="loading-card">
+          <div class="spinner"></div>
+          <div class="loading-text">加载详情中…</div>
+        </div>
       </div>
     </section>
   </main>
@@ -167,6 +180,10 @@ const el = {
   searchType: $<HTMLSelectElement>("#searchType"),
   searchBtn: $<HTMLButtonElement>("#searchBtn"),
   listStatus: $<HTMLElement>("#listStatus"),
+  listLoading: $<HTMLElement>("#listLoading"),
+  listLoadingText: $<HTMLElement>("#listLoadingText"),
+  listLoadingSub: $<HTMLElement>("#listLoadingSub"),
+  detailLoading: $<HTMLElement>("#detailLoading"),
   list: $<HTMLUListElement>("#list"),
   pagerBrowse: $<HTMLElement>("#pagerBrowse"),
   pagerFeed: $<HTMLElement>("#pagerFeed"),
@@ -195,6 +212,32 @@ function toast(msg: string) {
 
 function isMobile() {
   return window.matchMedia("(max-width: 760px)").matches;
+}
+
+/**
+ * 显示 / 隐藏明显的加载提示遮罩。
+ * 遮罩覆盖所在面板、挡住误点击，因此必须在 finally 里关闭，避免请求异常时卡死界面。
+ *
+ * @param which  "detail" 时用详情面板的遮罩，否则用列表面板的遮罩
+ * @param text    主文案，如「加载中…」
+ * @param sub     副文案（如抓取页进度），传空字符串表示不显示
+ */
+function setLoading(
+  on: boolean,
+  which: "list" | "detail" = "list",
+  text = "加载中…",
+  sub = "",
+) {
+  if (which === "detail") {
+    el.detailLoading.classList.toggle("hidden", !on);
+    return;
+  }
+  if (on) {
+    el.listLoadingText.textContent = text;
+    el.listLoadingSub.textContent = sub;
+    el.listLoadingSub.classList.toggle("hidden", sub === "");
+  }
+  el.listLoading.classList.toggle("hidden", !on);
 }
 
 // ---------- 时间范围 ----------
@@ -362,6 +405,7 @@ function setPagerMode() {
 async function loadFeed() {
   if (state.loadingList) return;
   state.loadingList = true;
+  setLoading(true, "list", "加载中…");
 
   const range = state.timeRange as Exclude<TimeRange, "all">;
   const cap = FEED_PAGE_CAP[range];
@@ -376,6 +420,7 @@ async function loadFeed() {
   try {
     for (let page = 1; page <= cap; page++) {
       el.listStatus.textContent = `正在抓取第 ${page} 页…`;
+      setLoading(true, "list", "加载中…", `正在抓取第 ${page} 页…`);
       const res = await fetchList(buildOpts(page));
       fetched = page;
       collected.push(...res.items);
@@ -415,6 +460,7 @@ async function loadFeed() {
     toast(`加载失败：${String(e)}`);
   } finally {
     state.loadingList = false;
+    setLoading(false, "list");
   }
 }
 
@@ -422,6 +468,7 @@ async function loadFeed() {
 async function loadBrowse(page: number) {
   if (state.loadingList) return;
   state.loadingList = true;
+  setLoading(true, "list", "加载中…");
 
   const followed = new Set(state.followedOrgs);
   try {
@@ -429,6 +476,8 @@ async function loadBrowse(page: number) {
     let skipped = 0;
     for (;;) {
       el.listStatus.textContent = "加载中…";
+      // 关注组织过滤后为空时会连跳若干页，这里把页码透出来，避免看起来像卡住
+      setLoading(true, "list", "加载中…", `正在读取第 ${target} 页…`);
       const res = await fetchList(buildOpts(target));
       const items = res.items.filter((i) => inFollowedOrgs(i, followed));
 
@@ -471,6 +520,7 @@ async function loadBrowse(page: number) {
     toast(`加载失败：${String(e)}`);
   } finally {
     state.loadingList = false;
+    setLoading(false, "list");
   }
 }
 
@@ -533,6 +583,7 @@ async function openDetail(id: string) {
   // 打开新的通知时，详情面板回到顶部（否则会沿用上一条的滚动位置）
   el.detailPane.scrollTop = 0;
   state.loadingDetail = true;
+  setLoading(true, "detail");
   el.detail.innerHTML = '<div class="placeholder">加载详情中…</div>';
   try {
     const d = await fetchDetail(id);
@@ -542,6 +593,7 @@ async function openDetail(id: string) {
     toast(`详情加载失败：${String(e)}`);
   } finally {
     state.loadingDetail = false;
+    setLoading(false, "detail");
   }
 }
 

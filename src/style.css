@@ -289,6 +289,7 @@ body {
 }
 
 .list-pane {
+  position: relative;
   width: 46%;
   min-width: 300px;
   border-right: 1px solid var(--border);
@@ -299,6 +300,7 @@ body {
 }
 
 .detail-pane {
+  position: relative;
   flex: 1 1 auto;
   overflow-y: auto;
   background: var(--panel);
@@ -581,6 +583,71 @@ body {
   background: #eef4fb;
   color: var(--primary);
   border-color: var(--primary);
+}
+
+/* ---------- 加载提示 ---------- */
+/* 覆盖所在面板的明显提示：半透明遮罩 + 旋转指示器 + 加粗文字，并挡住误点击。 */
+.pane-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(1px);
+  -webkit-backdrop-filter: blur(1px);
+  cursor: progress;
+}
+
+.loading-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 22px 32px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 20px rgba(16, 24, 40, 0.14);
+  max-width: min(78%, 300px);
+}
+
+.spinner {
+  width: 30px;
+  height: 30px;
+  border: 3px solid rgba(26, 95, 180, 0.18);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex: 0 0 auto;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.loading-text {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  text-align: center;
+  word-break: break-all;
+}
+
+.loading-sub {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* 尊重系统的"减少动态效果"设置 */
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 2.4s;
+  }
 }
 
 /* ---------- 提示 ---------- */
