@@ -243,6 +243,103 @@ async fn vpn_login(app: tauri::AppHandle) -> Result<(), String> {
             })();
             "#,
         )
+        // 在门户页注入一个「进入吉大 OA」浮层按钮。
+        //
+        // 为什么用按钮而不是自动点击：门户的磁贴不是 <a> 元素、地址也在点击瞬间
+        // 由 JS 现算（portal.js 的 AES，密钥按会话注入），自动定位并触发点击
+        // 反复失败且失败时无从察觉。按钮方式把"触发真正的点击"交给用户，
+        // 失败时肉眼可见（点了没反应），并且页面结构变化时不会静默失效。
+        .initialization_script(
+            r#"
+            (function () {
+              if (window.__oaBtnInstalled) return;
+              window.__oaBtnInstalled = true;
+
+              var KEY = 'oa.jlu.edu.cn';
+              var KEY2 = '校内办公';
+
+              function forwarded() {
+                return location.href.indexOf('/https/') >= 0;
+              }
+              function onOa() {
+                return location.href.indexOf('/defaultroot') >= 0;
+              }
+
+              // 找承载"吉大 OA"的卡片：取匹配文字的最小元素，
+              // 这样最接近门户自己绑定点击处理的那个节点。
+              function findTile() {
+                var all = document.querySelectorAll('div,li,td,a,span,p,section');
+                var best = null, bestLen = 1e9;
+                for (var i = 0; i < all.length; i++) {
+                  var e = all[i];
+                  var t = (e.textContent || '');
+                  if (t.indexOf(KEY) < 0 && t.indexOf(KEY2) < 0) continue;
+                  // 跳过我们自己注入的浮层，避免自点
+                  if (e.id === '__oaEnterWrap') continue;
+                  var len = t.length;
+                  if (len < bestLen) { best = e; bestLen = len; }
+                }
+                return best;
+              }
+
+              function ensureButton() {
+                try {
+                  if (onOa()) {
+                    var w0 = document.getElementById('__oaEnterWrap');
+                    if (w0) w0.style.display = 'none';
+                    return;
+                  }
+                  if (!forwarded()) return;
+                  // 只在确实能看到门户资源时才显示（避免登录页上误显示）
+                  var probe = document.body ? (document.body.innerText || '') : '';
+                  if (probe.indexOf(KEY) < 0 && probe.indexOf(KEY2) < 0) return;
+
+                  var wrap = document.getElementById('__oaEnterWrap');
+                  if (!wrap) {
+                    wrap = document.createElement('div');
+                    wrap.id = '__oaEnterWrap';
+                    wrap.setAttribute('style',
+                      'position:fixed;right:20px;bottom:20px;z-index:2147483647;'
+                      + 'font:14px/1.4 system-ui,-apple-system,"Microsoft YaHei",sans-serif;');
+                    var btn = document.createElement('button');
+                    btn.id = '__oaEnterBtn';
+                    btn.type = 'button';
+                    btn.textContent = '进入吉大 OA';
+                    btn.setAttribute('style',
+                      'background:#1a5fb4;color:#fff;border:0;border-radius:8px;'
+                      + 'padding:10px 18px;font-size:15px;font-weight:600;cursor:pointer;'
+                      + 'box-shadow:0 4px 14px rgba(0,0,0,.28);');
+                    btn.addEventListener('click', function (ev) {
+                      ev.preventDefault();
+                      ev.stopPropagation();
+                      var el = findTile();
+                      if (!el) {
+                        btn.textContent = '没找到 OA 磁贴';
+                        setTimeout(function () { btn.textContent = '进入吉大 OA'; }, 2500);
+                        return;
+                      }
+                      try {
+                        el.click();
+                      } catch (e) {
+                        // 兜底：直接跳到找到的元素里的链接（若有）
+                      }
+                      var a = el.querySelector ? el.querySelector('a[href]') : null;
+                      if (a && a.href && a.href.indexOf('/https/') >= 0) {
+                        location.href = a.href;
+                      }
+                    });
+                    wrap.appendChild(btn);
+                    (document.body || document.documentElement).appendChild(wrap);
+                  }
+                  wrap.style.display = 'block';
+                } catch (e) {}
+              }
+
+              setTimeout(ensureButton, 800);
+              setInterval(ensureButton, 1200);
+            })();
+            "#,
+        )
         .build()
         {
             Ok(w) => w,
