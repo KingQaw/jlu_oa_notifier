@@ -1,0 +1,17 @@
+# 统一换行符：仓库内一律 LF，避免 WSL/Windows 双环境协作时产生整文件 diff。
+# （当前 WSL 与 Windows 的 core.autocrlf 均未设置，默认 false；这里锁死以防被改。）
+* text=auto eol=lf
+
+# 二进制资源：禁止任何换行符转换与文本 diff
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.webp binary
+*.ico  binary
+*.icns binary
+*.keystore binary
+
+# 锁文件按文本处理，保持可读 diff
+package-lock.json text eol=lf
+Cargo.lock        text eol=lf

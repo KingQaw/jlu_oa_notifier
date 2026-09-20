@@ -1,0 +1,56 @@
+# Mutagen 同步配置：WSL（编辑 / git） → Windows（构建）
+#
+#   WSL  : /home/zhao/jlu_oa_notifier        ← 唯一真源，git 只在 WSL 侧操作
+#   Win  : D:\dev\jlu_oa_notifier            ← 唯一构建机（MSVC / Android NDK / 签名）
+#
+# 建立会话：
+#   mutagen sync create --name=jlu-oa \
+#     --configuration-file=.mutagen.yml \
+#     . /mnt/d/dev/jlu_oa_notifier
+#
+# 排障：
+#   mutagen sync list jlu-oa
+#   mutagen sync monitor jlu-oa
+#   mutagen sync reset jlu-oa      # 冲突后强制以 alpha(WSL) 为准重新同步
+#   mutagen sync terminate jlu-oa
+
+sync:
+  defaults:
+    # 冲突时以 alpha（WSL 侧）为准。切勿改成 two-way-safe——一旦两侧同时改动会阻塞同步。
+    mode: two-way-resolved
+
+    ignore:
+      # 仅排除 .git 目录本身。Git 的 index 存的是平台相关的 stat 信息（inode/mtime），
+      # 若参与双向同步会导致两侧无限互相"发现文件被修改"→ 重写 index → 再同步。
+      # 实测：.gitignore / .gitattributes 是普通文件，不受此开关影响，会正常同步。
+      vcs: true
+
+      paths:
+        # ── 依赖：跨平台不通用，两侧各自安装 ──────────────────────────
+        # .bin 下是平台相关的可执行 shim（.cmd vs 无扩展名），且 esbuild/rollup
+        # 带原生二进制，共用必然出错。
+        - "node_modules/"
+        - "scripts/verify/node_modules/"
+
+        # ── 构建产物：绝不可跨 OS 共用 ───────────────────────────────
+        # Cargo 的 target/ 含主机三元组路径与 .rlib/.rmeta 二进制格式，
+        # 跨平台共享会报 "invalid metadata" 一类错误。Windows 侧会自行生成。
+        - "target/"
+        - "src-tauri/target/"
+        # Android 生成工程：含本机绝对路径、NDK 版本与签名配置（已在 .gitignore 中）
+        - "src-tauri/gen/"
+        - "dist/"
+
+        # ── 本地临时物：抓取样本与本地工具链目录（已在 .gitignore 中）──
+        # ⚠️ 切勿写成宽泛的 "*.html"！那会连 Vite 入口 index.html 一起排除，
+        # 且 Mutagen 不会报任何错误，只在 Windows 侧构建时报
+        # "Could not resolve entry module index.html"。这里逐一对应 .gitignore 的模式。
+        - "oa_*.html"
+        - "d_*.html"
+        - "list*.html"
+        - ".dev/"
+        - ".npm-cache/"
+
+    # 让 WSL 侧权限不随 Windows 传播，避免文件的 exec 位在两侧来回抖。
+    permissions:
+      mode: portable
