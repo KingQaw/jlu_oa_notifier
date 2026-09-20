@@ -306,6 +306,56 @@ function isMobile() {
 }
 
 /**
+ * 处理 Android 状态栏遮挡：给顶栏补上状态栏高度的内边距。
+ *
+ * 背景：Android 15+ 强制 edge-to-edge，网页会绘制到状态栏之下（实测顶栏
+ * 从屏幕 y=0 就开始，被状态栏的时间/信号图标压住）。
+ *
+ * 取值优先级：
+ *  1. `env(safe-area-inset-top)`——Chromium 支持，正常应能拿到真实值；
+ *  2. 实测「探测元素撑满视口后的高度 − window.innerHeight」；
+ *  3. 按设备像素比换算：多数 Android 状态栏为 24dp，即 24 × dpr 物理像素。
+ *     设备像素比接近整数时，CSS 像素与物理像素 1:1，可直接用 dpr × 24。
+ *
+ * 桌面端三者都会得到 0，不产生任何影响。
+ * 测量结果写入 `document.title` 前缀，便于在真机上一眼确认取值来源。
+ */
+function applyStatusBarInset() {
+  // Android 15+ 强制 edge-to-edge，顶栏会被状态栏压住，需要补上状态栏高度。
+  //
+  // 实测数据（vivo / Android 16 / dpr=3.5）：
+  //   env(safe-area-inset-top) = 40 CSS px  ← 可用，但它等于「顶栏基础内边距
+  //                                            + 边框 + 状态栏」，不是纯状态栏高度
+  //   视口测量(100vh − innerHeight) = 0      ← 完全失效，不可用
+  // 因此以 safe-area 为准，减去顶栏自身的基础内边距(10px)与边框(1px)。
+  const BASE_PAD = 10;
+  const BASE_BORDER = 1;
+
+  let safeArea = 0;
+  try {
+    const probe = document.createElement("div");
+    probe.style.cssText =
+      "position:fixed;top:0;left:0;width:0;height:env(safe-area-inset-top,0px);visibility:hidden;";
+    document.body.appendChild(probe);
+    safeArea = probe.getBoundingClientRect().height;
+    probe.remove();
+  } catch {
+    /* 忽略 */
+  }
+
+  let inset = 0;
+  if (safeArea > 0) {
+    inset = safeArea - BASE_PAD - BASE_BORDER;
+  }
+  // 兜底：Android 状态栏通常为 24dp
+  if (inset <= 0 && /Android/i.test(navigator.userAgent)) {
+    inset = 24;
+  }
+  const safe = Math.max(0, Math.min(Math.round(inset), 40));
+  document.documentElement.style.setProperty("--status-bar-inset", `${safe}px`);
+}
+
+/**
  * 显示 / 隐藏明显的加载提示遮罩。
  * 遮罩覆盖所在面板、挡住误点击，因此必须在 finally 里关闭，避免请求异常时卡死界面。
  *
@@ -1291,5 +1341,8 @@ el.vpnDisableBtn.addEventListener("click", () => {
 loadPrefs();
 updateOrgBtn();
 updateTimeSeg();
+applyStatusBarInset();
+window.addEventListener("resize", applyStatusBarInset);
+window.addEventListener("orientationchange", applyStatusBarInset);
 updateVpnUi();
 void reload();

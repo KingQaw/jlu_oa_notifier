@@ -42,7 +42,9 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 16px;
+  /* 顶部内边距 = 基础值 + 状态栏高度（由 main.ts 运行时测量后写入）。
+     Android 15+ 强制 edge-to-edge，不补这段会被状态栏图标压住。 */
+  padding: calc(10px + var(--status-bar-inset, 0px)) 16px 10px;
   background: var(--primary);
   color: #fff;
   flex: 0 0 auto;
