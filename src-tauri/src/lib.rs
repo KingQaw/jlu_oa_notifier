@@ -224,6 +224,11 @@ fn now_str() -> String {
 /// 把登录过程的诊断信息写到临时目录，便于排查"登录了但取不到数据"。
 fn log_diag(line: &str) {
     use std::io::Write;
+    // 桌面：写临时文件；Android 上该路径应用读不到，因此同时输出到 stdout，
+    // Tauri 会把 Rust 的 stdout 转发到 logcat（标签 RustStdoutStderr），
+    // 这是真机上最可靠的日志通道：
+    //   adb logcat -s RustStdoutStderr
+    println!("[jlu-oa] {line}");
     let path = std::env::temp_dir().join("jlu-oa-vpn-login.log");
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
@@ -488,7 +493,8 @@ async fn vpn_login(app: tauri::AppHandle) -> Result<(), String> {
                 );
 
                 if ok {
-                    let _ = window.destroy();
+                    // 先回报结果再关窗：Android 上 destroy() 可能不会立即生效，
+                    // 若先 destroy 再 emit，事件有可能因窗口已销毁而丢失。
                     let _ = handle.emit(
                         "vpn-login-result",
                         VpnLoginResponse {
@@ -498,6 +504,17 @@ async fn vpn_login(app: tauri::AppHandle) -> Result<(), String> {
                             message: None,
                         },
                     );
+                    // 在页面留痕：用于判断流程是否真的走到关闭这一步
+                    show_login_status(&window, "验证通过，正在关闭窗口…");
+                    let closed_ok = window.destroy().is_ok();
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    // destroy 未生效时（Android 实测会遇到）再用 close 兜底
+                    if handle.get_webview_window(LOGIN_WINDOW_LABEL).is_some() {
+                        if let Some(w) = handle.get_webview_window(LOGIN_WINDOW_LABEL) {
+                            let _ = w.close();
+                        }
+                    }
+                    set_cookie_diag(format!("验证通过，destroy={closed_ok}"));
                     return;
                 }
                 last_candidate = Some(root);
