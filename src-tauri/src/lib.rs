@@ -106,7 +106,27 @@ fn vpn_root_of(url: &str) -> Option<String> {
 /// `cookies_for_url` 是同步方法，返回的正是"会发给该 URL 的那些 Cookie"，
 /// 因此域/路径匹配由 WebView 自己处理，我们不必手工筛选。
 fn cookies_for(window: &tauri::WebviewWindow, url: &tauri::Url) -> Option<String> {
-    let jar = window.cookies_for_url(url.clone()).ok()?;
+    // 真机诊断：Android 上这条路径是否真的可用（文档称 Unsupported，
+    // 但 wry 的实现是通过 CookieManager.getCookie 走 Java 侧，理论上可用）
+    let jar = match window.cookies_for_url(url.clone()) {
+        Ok(v) => {
+            log_diag(&format!(
+                "[{}] cookies_for_url 返回 {} 个 cookie（android={}）",
+                now_str(),
+                v.len(),
+                cfg!(target_os = "android")
+            ));
+            v
+        }
+        Err(e) => {
+            log_diag(&format!(
+                "[{}] cookies_for_url 失败：{e}（android={}）",
+                now_str(),
+                cfg!(target_os = "android")
+            ));
+            return None;
+        }
+    };
     let joined = jar
         .iter()
         .map(|c| format!("{}={}", c.name(), c.value()))
