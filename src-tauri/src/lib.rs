@@ -7,6 +7,9 @@ use tauri::{Emitter, Manager};
 const VPN_LOGIN_URL: &str = "https://vpn.jlu.edu.cn/login";
 const LOGIN_WINDOW_LABEL: &str = "vpn-login";
 const LOGIN_TIMEOUT_SECS: u64 = 300;
+/// 门户是 SPA，磁贴需等渲染/接口返回；最多尝试自动进入 OA 这么多次。
+/// 每轮轮询约 800ms，40 次≈32 秒，足够覆盖门户加载较慢的情况（实测第 13 次成功）。
+const AUTO_CLICK_MAX_TRIES: u32 = 40;
 
 /// 拉取通知列表（组织筛选 / 关键词 / 日期范围 / 分页）。
 /// 访问模式随 `opts.access` 传入：不传即直连，传 Vpn 即走网页版 VPN。
@@ -272,6 +275,9 @@ async fn vpn_login(app: tauri::AppHandle) -> Result<(), String> {
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(LOGIN_TIMEOUT_SECS);
         let mut last_candidate: Option<String> = None;
+        // 自动进入 OA 的尝试次数上限：门户是 SPA，磁贴要等渲染/接口回来才出现，
+        // 所以允许重试；但别无限注入脚本。
+        let mut auto_click_tries: u32 = 0;
 
         loop {
             if closed.load(Ordering::SeqCst) {
@@ -301,28 +307,54 @@ async fn vpn_login(app: tauri::AppHandle) -> Result<(), String> {
                 return;
             }
 
-            // 当前地址：登录成功后网关会跳转，用户门户与 oa 页面都带着同一段加密串
+            // 当前地址：登录成功后网关会跳转
             let current = window.url().ok().map(|u| u.to_string());
 
-            // 候选前缀优先级：
-            //  1. 当前地址已带 defaultroot（用户已经点到 oa）→ 直接截断
-            //  2. 当前地址里的加密串（登录后停在用户门户也能拿到）→ 拼出 oa 前缀
+            // 自动进入 OA：登录后停在门户页时，找出"吉大 OA"磁贴的链接并直接导航，
+            // 省掉用户手动点击那一步。
             //
-            // 刻意不做"请求明文 /https/oa.jlu.edu.cn/ 让网关规范化"的兜底：那种
-            // 地址不含加密串，能否配合会话工作未经证实，不把不确定性放进主流程。
+            // 关键：这里只是**读取门户自己生成好的链接**，不复制门户的加密逻辑
+            // （加密串按目标资源用 AES 生成，密钥按会话注入，见 portal.js）。
+            // 因此拿到的地址天然正确，也不怕网关升级改算法。
+            let at_portal = current
+                .as_deref()
+                .map(|u| u.contains("/https/") && !u.contains("/defaultroot"))
+                .unwrap_or(false);
+            if at_portal && auto_click_tries < AUTO_CLICK_MAX_TRIES {
+                auto_click_tries += 1;
+                let script = format!(
+                    r#"
+                    (function () {{
+                      var cur = location.href;
+                      if (cur.indexOf('/defaultroot') >= 0) return 'already';
+                      var as = document.querySelectorAll('a[href]');
+                      for (var i = 0; i < as.length; i++) {{
+                        var h = as[i].getAttribute('href') || '';
+                        if (h.indexOf('/defaultroot') < 0) continue;
+                        if (h === cur) continue;
+                        location.href = as[i].href;
+                        return 'ok';
+                      }}
+                      return 'none:' + as.length;
+                    }})();
+                    "#
+                );
+                log_diag(&format!(
+                    "[{}] 在门户页，尝试自动进入 OA（第 {auto_click_tries} 次）",
+                    now_str()
+                ));
+                let _ = window.eval(script);
+            }
+
+            // 候选前缀：只认"地址里已出现 defaultroot"，即已经真的在 OA 上。
+            //
+            // 刻意不"从当前地址提取加密串去拼 OA 前缀"：门户页面自身也在
+            // /https/<加密串>/ 之下，而复用门户的串去拼 oa 是错的（两者不同）。
             let mut candidates: Vec<String> = Vec::new();
             if let Some(u) = &current {
-                // 唯一可信的来源：地址里已经出现 defaultroot，即用户真的进入了 OA。
-                //
-                // 刻意不再"从当前地址提取加密串去拼 OA 前缀"：门户页面自身也在
-                // /https/<加密串>/ 之下，那样会把门户的加密串误当成 OA 的。
-                // 加密串由门户的 JS（AES）按目标资源生成，本程序不复制该逻辑，
-                // 只复用门户自己生成出来的那个 OA 地址。
                 if let Some(root) = vpn_root_of(u) {
                     log_diag(&format!("[{}] 已进入 OA：{u}", now_str()));
                     candidates.push(root);
-                } else if u.contains("/https/") && u.contains("/user/portal") {
-                    log_diag(&format!("[{}] 当前在门户页，等待用户点进吉大 OA", now_str()));
                 }
             }
             candidates.dedup();
