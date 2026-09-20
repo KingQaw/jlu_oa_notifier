@@ -174,8 +174,38 @@ fn show_login_success(window: &tauri::WebviewWindow) {
       '<div style="width:64px;height:64px;border-radius:50%;background:#1a5fb4;' +
       'color:#fff;font-size:34px;line-height:64px;margin-bottom:18px;">&#10003;</div>' +
       '<div style="font-size:19px;font-weight:700;margin-bottom:6px;">VPN 登录成功</div>' +
-      '<div style="color:#7b8794;">已自动配置完成，本窗口即将关闭</div>';
+      '<div style="color:#7b8794;">已自动配置完成</div>' +
+      '<button id="__oaCloseBtn" style="margin-top:22px;background:#1a5fb4;color:#fff;' +
+      'border:0;border-radius:8px;padding:11px 26px;font-size:15px;font-weight:600;' +
+      'cursor:pointer;">关闭本窗口</button>' +
+      '<div id="__oaCloseMsg" style="margin-top:12px;color:#7b8794;font-size:13px;"></div>';
     (document.body || document.documentElement).appendChild(d);
+
+    // 页面内直接调用 Tauri 的 WebviewWindow API 关闭自身。
+    // 这条路径走的是 Tauri 官方 JS API（Android 上有支持），
+    // 与 Rust 侧 destroy() 不同，值得一试。
+    var tryClose = function () {
+      var msg = document.getElementById('__oaCloseMsg');
+      try {
+        var api = window.__TAURI__;
+        if (!api) { if (msg) msg.textContent = '未注入 Tauri API'; return false; }
+        var wv = api.webviewWindow || api.window;
+        if (!wv || !wv.getCurrentWebviewWindow) {
+          if (msg) msg.textContent = '无 getCurrentWebviewWindow';
+          return false;
+        }
+        wv.getCurrentWebviewWindow().close()
+          .then(function () { if (msg) msg.textContent = '已请求关闭'; })
+          .catch(function (e) { if (msg) msg.textContent = '关闭失败: ' + e; });
+        return true;
+      } catch (e) {
+        if (msg) msg.textContent = '异常: ' + e;
+        return false;
+      }
+    };
+    var b = document.getElementById('__oaCloseBtn');
+    if (b) b.addEventListener('click', tryClose);
+    setTimeout(tryClose, 400);
   } catch (e) {}
 })();
 "#;
@@ -572,7 +602,9 @@ async fn vpn_login(app: tauri::AppHandle) -> Result<(), String> {
                         }
                     }) {
                         Ok(()) => {
-                            std::thread::sleep(std::time::Duration::from_millis(600));
+                            // 销毁可能是异步的：等待充分再判定，避免把
+                            // "尚未完成"误判成"无法销毁"
+                            std::thread::sleep(std::time::Duration::from_millis(2500));
                             // 仍未关闭则用 close 再试一次
                             if handle.get_webview_window(LOGIN_WINDOW_LABEL).is_some() {
                                 let h2 = handle.clone();
