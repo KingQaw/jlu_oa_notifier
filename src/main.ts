@@ -550,6 +550,13 @@ function updateVpnUi() {
     ? "当前：经 VPN 访问（会话由登录窗口自动获取）"
     : "当前：经 VPN 访问（无会话，可能提示需要登录）";
   el.vpnStatus.classList.remove("warn");
+
+  // Android 上内置登录窗口无法自动关闭（wry 平台限制：destroy/close/hide 均为
+  // no-op，Android 后端也从不调用 wry 已备好的多 Activity 支持）。登录成功后
+  // 登录窗口会显示成功页，需要用户手动关掉它回去，因此这里给出提示。
+  if (/Android/i.test(navigator.userAgent)) {
+    el.vpnStatus.textContent += "；登录完成后请手动关闭登录窗口";
+  }
 }
 
 /** 切换面板显隐，并在打开时把已保存的值回填到手动配置输入框。 */

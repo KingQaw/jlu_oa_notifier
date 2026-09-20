@@ -650,6 +650,42 @@ dir /s /b src-tauri\gen\android\app\build\outputs\*.apk
 - 直连失败会返回 `NETWORK_UNREACHABLE`，界面提示可改用 VPN。
 - VPN 模式下附件下载走系统浏览器，需要浏览器自身也处于 VPN 登录态。
 
+### Android 平台限制：登录窗口无法自动关闭
+
+真机实测（vivo / Android 16）确认：**VPN 登录的全部功能在 Android 上可用**
+——`cookies_for_url` 能读到 6 个 cookie（含 HttpOnly 的
+`wengine_vpn_ticketvpn_jlu_edu_cn`），会话验证成功（`total=74933`）。
+但**内置登录窗口在登录成功后无法自动关闭**，需用户手动关闭。
+
+根因（代码级证据，非推测）：wry 0.55.1 的 Android 后端缺少窗口销毁能力。
+
+| 能力 | wry Android 上的实现 |
+| --- | --- |
+| `destroy_webview` | 只清理 Rust 侧注册表，**从不移除 Android 的 View** |
+| `set_visible`（hide/show） | `// Unsupported`，空实现 |
+| `set_bounds` / `focus` | 同样 `// Unsupported` |
+| 窗口级 `close` / `destroy` | **不存在**；Tauri 的二者最终都落到 `destroy_webview` |
+
+因此以下路径**全部无效**（均已实测）：
+
+1. Rust 侧 `WebviewWindow::destroy()` / `close()`（含 `run_on_main_thread` 包装）
+2. `WebviewWindow::hide()`
+3. 页面内 JS `getCurrentWebviewWindow().close()`
+   ——`__TAURI__` 只注入 Tauri 自己的页面，外部页面拿不到（且 Tauri 2.11 无
+   `withGlobalTauri` 配置项）
+
+**wry 其实备好了多 Activity 支持**（`WryActivity.kt` 里有
+`startActivity(Class<*>)`，通过 `intent.extras` 传 `__wryActivityId`，
+`onDestroy` 也会正确清理 WebView），但 **Tauri 的 Android 后端从不调用它**，
+第二个窗口只是在同一个 Activity 里又加了一个 WebView——这正是 `finish()`
+无法使用、窗口关不掉的原因。
+
+**结论**：要彻底关闭需在 Android 原生层打补丁（注册独立 Activity 并
+`finish()`，或移除 WebView），而 `src-tauri/gen/` 被 gitignore、每次
+`android:init` 都会重生成，属长期维护负担。当前选择是**接受该限制**：
+登录成功后登录窗口显示成功页并提示用户手动关闭（点 `×` 或返回键），
+功能不受影响。Android 上推荐直接用校园网直连。
+
 ## 说明与限制
 
 - **网络环境**：`oa.jlu.edu.cn` 为校内平台，通常需在校园网或 VPN 环境下访问。

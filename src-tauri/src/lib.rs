@@ -169,43 +169,16 @@ fn show_login_success(window: &tauri::WebviewWindow) {
       'position:fixed;inset:0;z-index:2147483647;background:#ffffff;' +
       'display:flex;flex-direction:column;align-items:center;justify-content:center;' +
       'font:16px/1.8 system-ui,-apple-system,"Microsoft YaHei",sans-serif;color:#1f2937;' +
-      'text-align:center;padding:24px;');
+      'text-align:center;padding:28px;');
     d.innerHTML =
       '<div style="width:64px;height:64px;border-radius:50%;background:#1a5fb4;' +
       'color:#fff;font-size:34px;line-height:64px;margin-bottom:18px;">&#10003;</div>' +
-      '<div style="font-size:19px;font-weight:700;margin-bottom:6px;">VPN 登录成功</div>' +
-      '<div style="color:#7b8794;">已自动配置完成</div>' +
-      '<button id="__oaCloseBtn" style="margin-top:22px;background:#1a5fb4;color:#fff;' +
-      'border:0;border-radius:8px;padding:11px 26px;font-size:15px;font-weight:600;' +
-      'cursor:pointer;">关闭本窗口</button>' +
-      '<div id="__oaCloseMsg" style="margin-top:12px;color:#7b8794;font-size:13px;"></div>';
+      '<div style="font-size:19px;font-weight:700;margin-bottom:8px;">VPN 登录成功</div>' +
+      '<div style="color:#7b8794;max-width:22em;">已自动配置并启用，可以回到应用查看通知了</div>' +
+      '<div style="margin-top:18px;padding:10px 14px;background:#eef4fb;border-radius:8px;' +
+      'color:#1a5fb4;font-size:14px;max-width:22em;">' +
+      'Android 上本窗口无法自动关闭，请点右上角 <b>×</b> 或按返回键关闭它</div>';
     (document.body || document.documentElement).appendChild(d);
-
-    // 页面内直接调用 Tauri 的 WebviewWindow API 关闭自身。
-    // 这条路径走的是 Tauri 官方 JS API（Android 上有支持），
-    // 与 Rust 侧 destroy() 不同，值得一试。
-    var tryClose = function () {
-      var msg = document.getElementById('__oaCloseMsg');
-      try {
-        var api = window.__TAURI__;
-        if (!api) { if (msg) msg.textContent = '未注入 Tauri API'; return false; }
-        var wv = api.webviewWindow || api.window;
-        if (!wv || !wv.getCurrentWebviewWindow) {
-          if (msg) msg.textContent = '无 getCurrentWebviewWindow';
-          return false;
-        }
-        wv.getCurrentWebviewWindow().close()
-          .then(function () { if (msg) msg.textContent = '已请求关闭'; })
-          .catch(function (e) { if (msg) msg.textContent = '关闭失败: ' + e; });
-        return true;
-      } catch (e) {
-        if (msg) msg.textContent = '异常: ' + e;
-        return false;
-      }
-    };
-    var b = document.getElementById('__oaCloseBtn');
-    if (b) b.addEventListener('click', tryClose);
-    setTimeout(tryClose, 400);
   } catch (e) {}
 })();
 "#;
