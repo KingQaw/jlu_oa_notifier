@@ -506,15 +506,41 @@ async fn vpn_login(app: tauri::AppHandle) -> Result<(), String> {
                     );
                     // 在页面留痕：用于判断流程是否真的走到关闭这一步
                     show_login_status(&window, "验证通过，正在关闭窗口…");
-                    let closed_ok = window.destroy().is_ok();
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                    // destroy 未生效时（Android 实测会遇到）再用 close 兜底
-                    if handle.get_webview_window(LOGIN_WINDOW_LABEL).is_some() {
-                        if let Some(w) = handle.get_webview_window(LOGIN_WINDOW_LABEL) {
-                            let _ = w.close();
+                    // 关窗必须在**主线程**执行：本函数运行在 spawn 出来的后台线程，
+                    // 而 Android 上直接在后台线程 destroy() 不生效（实测窗口不关）。
+                    let destroy_err = Arc::new(Mutex::new(String::new()));
+                    let err_slot = destroy_err.clone();
+                    let handle_for_close = handle.clone();
+                    let msg = match window.run_on_main_thread(move || {
+                        if let Some(w) = handle_for_close.get_webview_window(LOGIN_WINDOW_LABEL) {
+                            if let Err(e) = w.destroy() {
+                                if let Ok(mut g) = err_slot.lock() {
+                                    *g = format!("destroy: {e}");
+                                }
+                            }
                         }
-                    }
-                    set_cookie_diag(format!("验证通过，destroy={closed_ok}"));
+                    }) {
+                        Ok(()) => {
+                            std::thread::sleep(std::time::Duration::from_millis(600));
+                            // 仍未关闭则用 close 再试一次
+                            if handle.get_webview_window(LOGIN_WINDOW_LABEL).is_some() {
+                                let h2 = handle.clone();
+                                let _ = window.run_on_main_thread(move || {
+                                    if let Some(w) = h2.get_webview_window(LOGIN_WINDOW_LABEL) {
+                                        let _ = w.close();
+                                    }
+                                });
+                                std::thread::sleep(std::time::Duration::from_millis(400));
+                            }
+                            let still = handle
+                                .get_webview_window(LOGIN_WINDOW_LABEL)
+                                .is_some();
+                            format!("主线程关窗完成，窗口仍存在={still}")
+                        }
+                        Err(e) => format!("run_on_main_thread 失败：{e}"),
+                    };
+                    let extra = destroy_err.lock().map(|g| g.clone()).unwrap_or_default();
+                    set_cookie_diag(format!("验证通过；{msg} {extra}"));
                     return;
                 }
                 last_candidate = Some(root);
