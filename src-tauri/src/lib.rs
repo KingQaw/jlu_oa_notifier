@@ -618,6 +618,17 @@ async fn close_vpn_login(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 退出应用（Android 返回键在根页面时调用）。
+///
+/// 为什么需要它：Tauri 的 Android 端把返回键交给前端事件处理
+/// （`WryActivity.handleBackNavigation` 默认为 true，拦截了系统默认的
+/// finish），因此"不处理就交给系统退出"这个假设是错的——实测返回键在列表页
+/// 没有任何反应，应用退不出去。这里提供一个显式退出的命令。
+#[tauri::command]
+async fn exit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -629,7 +640,8 @@ pub fn run() {
             build_attachment_url,
             fetch_image,
             vpn_login,
-            close_vpn_login
+            close_vpn_login,
+            exit_app
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -10,6 +10,7 @@ import {
   fetchImage,
   startVpnLogin,
   closeVpnLogin,
+  exitApp,
 } from "./api";
 import { ORG_PRESETS } from "./orgs";
 import {
@@ -1267,8 +1268,16 @@ if (/Android/i.test(navigator.userAgent)) {
     } else if (canGoBack) {
       // 列表页：兜底清掉残留状态，避免返回键「按了没反应」
       history.back();
+    } else {
+      // 列表页且无历史可退 → 退出应用。
+      //
+      // 注意：**不能**指望"不处理就交给系统默认行为"。Tauri 的 Android 端
+      // （WryActivity.handleBackNavigation 默认 true）会拦截返回键并只发前端
+      // 事件，系统不会 finish，实测返回键在列表页完全没反应、退不出去。
+      void exitApp().catch(() => {
+        /* 桌面端不该走到这里 */
+      });
     }
-    // 列表页且无历史可退时不做处理，交给系统默认行为（退出应用）
   }).catch(() => {
     /* 插件不可用时忽略 */
   });

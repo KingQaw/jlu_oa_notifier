@@ -53,3 +53,13 @@ export function startVpnLogin(): Promise<void> {
 export function closeVpnLogin(): Promise<void> {
   return invoke<void>("close_vpn_login");
 }
+
+/**
+ * 退出应用。
+ *
+ * Android 上返回键由 Tauri 拦截并转成前端事件（`onBackButtonPress`），
+ * 系统不会自己 finish，所以根页面按返回键时必须显式退出。
+ */
+export function exitApp(): Promise<void> {
+  return invoke<void>("exit_app");
+}

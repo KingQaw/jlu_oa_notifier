@@ -133,6 +133,25 @@ fn apply_cookies(
     req
 }
 
+/// 对 URL 查询参数值做百分号编码（RFC 3986 unreserved 之外全部转义）。
+///
+/// 为什么需要：最终下载直链是用 `format!` 手工拼的，而 `?res=` 的值由服务端
+/// 编码得到、**可能以 base64 的 `=` 结尾，也可能含 `+`**。不做编码时：
+/// - `+` 会被部分下载器/服务端解码成空格
+/// - 若解出的串里含 `&`，参数会被截断，下载内容为空（表现为"文件 0KB"）
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 /// 拉取通知列表。
 pub async fn fetch_list(opts: &ListOptions) -> Result<ListResult> {
     let client = http_client()?;
@@ -260,9 +279,14 @@ pub async fn build_attachment_url(
     }
 
     // 3) 最终直链（同样走当前访问模式，VPN 模式下由系统浏览器带着网关会话下载）
+    // 对 res 做百分号编码后再拼接：`=`、`+`、`&` 等字符不编码会导致
+    // 参数被截断或变形（实测表现为下载文件 0KB、文件名乱码）。
     Ok(url_for(
         &root,
-        &format!("rd/download/attachdownload.jsp?res={encoded}"),
+        &format!(
+            "rd/download/attachdownload.jsp?res={}",
+            percent_encode(&encoded)
+        ),
     ))
 }
 
@@ -451,6 +475,22 @@ mod tests {
             url_for("https://oa.jlu.edu.cn/defaultroot/", "PortalInformation!jldxList.action"),
             "https://oa.jlu.edu.cn/defaultroot/PortalInformation!jldxList.action"
         );
+    }
+
+    /// 下载直链的 res 参数必须做百分号编码：`=`、`+`、`&` 不编码会导致
+    /// 参数截断/变形，表现为下载文件 0KB、文件名乱码。
+    #[test]
+    fn percent_encodes_reserved_chars_in_attachment_token() {
+        // base64 常见的 `=` 填充必须转义
+        assert_eq!(percent_encode("abc=="), "abc%3D%3D");
+        // `+` 不转义会被解码成空格
+        assert_eq!(percent_encode("a+b"), "a%2Bb");
+        // `&` 不转义会截断查询参数（下载内容为空）
+        assert_eq!(percent_encode("a&b"), "a%26b");
+        // 非 ASCII 也要转义
+        assert_eq!(percent_encode("中"), "%E4%B8%AD");
+        // unreserved 字符保持不变
+        assert_eq!(percent_encode("aZ0-_.~"), "aZ0-_.~");
     }
 
     #[test]
