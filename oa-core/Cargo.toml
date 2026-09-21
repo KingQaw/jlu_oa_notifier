@@ -1,6 +1,6 @@
 [package]
 name = "oa-core"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "吉林大学电子校务平台（校内通知）抓取与解析核心库"
 
