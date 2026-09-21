@@ -1257,6 +1257,21 @@ window.addEventListener("popstate", () => {
   if (isDetailOpenOnMobile()) backToList();
 });
 
+/** 上一次按返回键的时间戳，用于「再按一次退出」确认，避免误触直接退出。 */
+let lastBackAt = 0;
+
+/**
+ * 退出确认：首次按返回键只提示，2 秒内再按一次才真正退出。
+ * 这是 Android 上常见的「再按一次退出」交互，防止误触返回键丢失浏览位置。
+ */
+function confirmExit(): boolean {
+  const now = Date.now();
+  if (now - lastBackAt < 2000) return true;
+  lastBackAt = now;
+  toast("再按一次返回键退出应用");
+  return false;
+}
+
 // Android 物理返回键 / 返回手势：Tauri 2 由 app 插件的 back-button 事件提供。
 // 桌面端没有该事件，先按 UA 判断，避免无谓注册与报错。
 if (/Android/i.test(navigator.userAgent)) {
@@ -1268,8 +1283,8 @@ if (/Android/i.test(navigator.userAgent)) {
     } else if (canGoBack) {
       // 列表页：兜底清掉残留状态，避免返回键「按了没反应」
       history.back();
-    } else {
-      // 列表页且无历史可退 → 退出应用。
+    } else if (confirmExit()) {
+      // 列表页且无历史可退 → 确认后退出应用。
       //
       // 注意：**不能**指望"不处理就交给系统默认行为"。Tauri 的 Android 端
       // （WryActivity.handleBackNavigation 默认 true）会拦截返回键并只发前端
